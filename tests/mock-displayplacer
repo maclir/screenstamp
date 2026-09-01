@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+if [[ "${1:-}" == "list" ]]; then
+  [[ -n "${DISPLAYPLACER_LIST_FILE:-}" ]] || {
+    print -u2 -- "DISPLAYPLACER_LIST_FILE is required"
+    exit 2
+  }
+  /bin/cat -- "$DISPLAYPLACER_LIST_FILE"
+  exit 0
+fi
+
+[[ -n "${DISPLAYPLACER_CAPTURE_FILE:-}" ]] || {
+  print -u2 -- "DISPLAYPLACER_CAPTURE_FILE is required"
+  exit 2
+}
+
+: > "$DISPLAYPLACER_CAPTURE_FILE"
+for argument in "$@"; do
+  print -r -- "$argument" >> "$DISPLAYPLACER_CAPTURE_FILE"
+done

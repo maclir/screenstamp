@@ -1,0 +1,31 @@
+Persistent screen id: INTERNAL-REFERENCE-ID
+Contextual screen id: 1
+Serial screen id: s111
+Type: MacBook built in screen
+Resolution: 1512x982
+Hertz: 120
+Color Depth: 8
+Scaling: on
+Origin: (0,0) - main display
+Rotation: 0
+Enabled: true
+Resolutions for rotation 0:
+  mode 0: res:1512x982 hz:120 color_depth:8 scaling:on <-- current mode
+
+Persistent screen id: EXTERNAL-REFERENCE-ID
+Contextual screen id: 2
+Serial screen id: s222
+Type: 27 inch external screen
+Resolution: 2560x1440
+Hertz: 60
+Color Depth: 8
+Scaling: off
+Origin: (1512,0)
+Rotation: 0
+Enabled: true
+Resolutions for rotation 0:
+  mode 0: res:2560x1440 hz:60 color_depth:8 <-- current mode
+
+Execute the command below to set your screens to the current arrangement.
+
+displayplacer "id:INTERNAL-REFERENCE-ID res:1512x982 hz:120 color_depth:8 enabled:true scaling:on origin:(0,0) degree:0" "id:EXTERNAL-REFERENCE-ID res:2560x1440 hz:60 color_depth:8 enabled:true scaling:off origin:(1512,0) degree:0"

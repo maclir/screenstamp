@@ -1,0 +1,140 @@
+#!/bin/zsh
+
+set -u
+
+readonly TEST_DIR="${0:A:h}"
+readonly PROJECT_DIR="${TEST_DIR:h}"
+readonly COMMAND="$PROJECT_DIR/bin/display-profile"
+readonly MOCK="$TEST_DIR/mock-displayplacer"
+readonly FIXTURES="$TEST_DIR/fixtures"
+
+integer passed=0
+integer failed=0
+
+pass() {
+  (( passed += 1 ))
+  print -- "ok - $1"
+}
+
+fail() {
+  (( failed += 1 ))
+  print -u2 -- "not ok - $1"
+}
+
+assert_files_equal() {
+  local description="$1"
+  local expected="$2"
+  local actual="$3"
+
+  if diff -u -- "$expected" "$actual"; then
+    pass "$description"
+  else
+    fail "$description"
+  fi
+}
+
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/display-profile-tests.XXXXXX")" || exit 1
+trap 'rm -rf -- "$temporary_root"' EXIT
+
+profile_dir="$temporary_root/profiles"
+mkdir -p -- "$profile_dir"
+
+if DISPLAY_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  "$COMMAND" save office > "$temporary_root/save.out" 2> "$temporary_root/save.err"; then
+  pass "save accepts a displayplacer layout"
+else
+  fail "save accepts a displayplacer layout"
+  /bin/cat -- "$temporary_root/save.err" >&2
+fi
+
+assert_files_equal \
+  "save removes physical IDs and preserves display settings" \
+  "$FIXTURES/expected-office.profile" \
+  "$profile_dir/office.profile"
+
+capture="$temporary_root/load-arguments.txt"
+if DISPLAY_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$capture" \
+  "$COMMAND" load office > "$temporary_root/load.out" 2> "$temporary_root/load.err"; then
+  pass "load accepts different physical monitor IDs"
+else
+  fail "load accepts different physical monitor IDs"
+  /bin/cat -- "$temporary_root/load.err" >&2
+fi
+
+assert_files_equal \
+  "load applies the saved settings to the currently connected IDs" \
+  "$FIXTURES/expected-load-arguments.txt" \
+  "$capture"
+
+if DISPLAY_PROFILE_DIR="$profile_dir" "$COMMAND" list > "$temporary_root/list.out"; then
+  if [[ "$(<"$temporary_root/list.out")" == "office" ]]; then
+    pass "list prints saved profile names"
+  else
+    fail "list prints saved profile names"
+  fi
+else
+  fail "list prints saved profile names"
+fi
+
+if DISPLAY_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  "$COMMAND" save '../unsafe' > /dev/null 2>&1; then
+  fail "save rejects unsafe profile names"
+else
+  pass "save rejects unsafe profile names"
+fi
+
+mismatch_capture="$temporary_root/mismatch-arguments.txt"
+if DISPLAY_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/extra-monitor-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$mismatch_capture" \
+  "$COMMAND" load office > /dev/null 2> "$temporary_root/mismatch.err"; then
+  fail "load rejects a different number of connected displays"
+else
+  if [[ ! -e "$mismatch_capture" ]]; then
+    pass "load rejects a different number of connected displays"
+  else
+    fail "load rejects before applying a mismatched layout"
+  fi
+fi
+
+make_profile_dir="$temporary_root/make-profiles"
+mkdir -p -- "$make_profile_dir"
+if DISPLAY_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  make -s -C "$PROJECT_DIR" save meeting-room > "$temporary_root/make.out" 2> "$temporary_root/make.err"; then
+  if [[ -f "$make_profile_dir/meeting-room.profile" ]]; then
+    pass "make save supports a positional profile name"
+  else
+    fail "make save supports a positional profile name"
+  fi
+else
+  fail "make save supports a positional profile name"
+  /bin/cat -- "$temporary_root/make.err" >&2
+fi
+
+make_capture="$temporary_root/make-load-arguments.txt"
+if DISPLAY_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$make_capture" \
+  make -s -C "$PROJECT_DIR" load meeting-room > "$temporary_root/make-load.out" 2> "$temporary_root/make-load.err"; then
+  assert_files_equal \
+    "make load supports a positional profile name" \
+    "$FIXTURES/expected-load-arguments.txt" \
+    "$make_capture"
+else
+  fail "make load supports a positional profile name"
+  /bin/cat -- "$temporary_root/make-load.err" >&2
+fi
+
+print -- "$passed passed; $failed failed"
+(( failed == 0 ))

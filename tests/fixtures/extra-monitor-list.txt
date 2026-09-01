@@ -1,0 +1,35 @@
+Persistent screen id: INTERNAL-CURRENT-ID
+Contextual screen id: 1
+Serial screen id: s111
+Type: MacBook built in screen
+Resolution: 1512x982
+Hertz: 120
+Color Depth: 8
+Scaling: on
+Origin: (0,0) - main display
+Rotation: 0
+Enabled: true
+
+Persistent screen id: EXTERNAL-ONE-ID
+Contextual screen id: 2
+Serial screen id: s222
+Type: 27 inch external screen
+Resolution: 2560x1440
+Hertz: 60
+Color Depth: 8
+Scaling: off
+Origin: (1512,0)
+Rotation: 0
+Enabled: true
+
+Persistent screen id: EXTERNAL-TWO-ID
+Contextual screen id: 3
+Serial screen id: s333
+Type: 27 inch external screen
+Resolution: 2560x1440
+Hertz: 60
+Color Depth: 8
+Scaling: off
+Origin: (4072,0)
+Rotation: 0
+Enabled: true

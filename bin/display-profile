@@ -1,0 +1,254 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="${0:A:h}"
+readonly PROJECT_DIR="${SCRIPT_DIR:h}"
+readonly PROFILE_DIR="${DISPLAY_PROFILE_DIR:-$PROJECT_DIR/profiles}"
+readonly DISPLAYPLACER_BIN="${DISPLAYPLACER_BIN:-displayplacer}"
+readonly PROFILE_HEADER="display-profile-v1"
+
+die() {
+  print -u2 -- "display-profile: $*"
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  display-profile save <name>
+  display-profile load <name>
+  display-profile list
+
+Names may contain letters, numbers, dots, underscores, and hyphens.
+EOF
+}
+
+validate_name() {
+  local name="$1"
+
+  if ! print -r -- "$name" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+    die "invalid profile name '$name'"
+  fi
+}
+
+require_displayplacer() {
+  if [[ "$DISPLAYPLACER_BIN" == */* ]]; then
+    [[ -x "$DISPLAYPLACER_BIN" ]] || die "displayplacer is not executable: $DISPLAYPLACER_BIN"
+  elif ! command -v "$DISPLAYPLACER_BIN" >/dev/null 2>&1; then
+    die "displayplacer was not found; install it with: brew install displayplacer"
+  fi
+}
+
+read_display_state() {
+  require_displayplacer
+  "$DISPLAYPLACER_BIN" list || die "could not read the connected displays"
+}
+
+# Convert displayplacer's human-readable blocks into portable role + options rows.
+# A profile deliberately excludes physical screen IDs, which differ between desks.
+state_to_profile_rows() {
+  awk '
+    function reset_screen() {
+      role = ""
+      resolution = ""
+      hertz = ""
+      depth = ""
+      scaling = ""
+      origin = ""
+      rotation = ""
+    }
+
+    BEGIN { reset_screen() }
+
+    /^Type: / {
+      if ($0 == "Type: MacBook built in screen") {
+        kind = "builtin"
+      } else if ($0 ~ /external screen$/) {
+        kind = "external"
+      } else {
+        kind = ""
+      }
+
+      if (kind != "") {
+        count[kind]++
+        role = kind "-" count[kind]
+      }
+      next
+    }
+
+    /^Resolution: / { resolution = $2; next }
+    /^Hertz: / { hertz = $2; next }
+    /^Color Depth: / { depth = $3; next }
+    /^Scaling: / { scaling = $2; next }
+    /^Origin: / { origin = $2; next }
+    /^Rotation: / { rotation = $2; next }
+
+    /^Enabled: / {
+      enabled = $2
+      if (role == "" || resolution == "" || depth == "" || scaling == "" ||
+          origin == "" || rotation == "" || enabled == "") {
+        next
+      }
+
+      options = "res:" resolution
+      if (hertz != "" && hertz != "N/A") {
+        options = options " hz:" hertz
+      }
+      options = options " color_depth:" depth
+      options = options " enabled:" enabled
+      options = options " scaling:" scaling
+      options = options " origin:" origin
+      options = options " degree:" rotation
+
+      print role "\t" options
+      reset_screen()
+    }
+  '
+}
+
+# Extract the IDs for the displays connected at load time using the same roles.
+state_to_current_ids() {
+  awk '
+    /^Persistent screen id: / { id = $4; next }
+
+    /^Type: / {
+      if ($0 == "Type: MacBook built in screen") {
+        kind = "builtin"
+      } else if ($0 ~ /external screen$/) {
+        kind = "external"
+      } else {
+        kind = ""
+      }
+
+      if (kind != "" && id != "") {
+        count[kind]++
+        print kind "-" count[kind] "\t" id
+      }
+      id = ""
+    }
+  '
+}
+
+save_profile() {
+  local name="$1"
+  local state rows destination temporary
+
+  validate_name "$name"
+  state="$(read_display_state)"
+  rows="$(print -r -- "$state" | state_to_profile_rows)"
+  [[ -n "$rows" ]] || die "displayplacer returned no usable display configuration"
+
+  mkdir -p -- "$PROFILE_DIR"
+  destination="$PROFILE_DIR/$name.profile"
+  temporary="$(mktemp "$PROFILE_DIR/.$name.XXXXXX")" || die "could not create a temporary profile"
+
+  if ! {
+    print -r -- "$PROFILE_HEADER"
+    print -r -- "$rows"
+  } > "$temporary"; then
+    rm -f -- "$temporary"
+    die "could not write profile '$name'"
+  fi
+
+  if ! mv -f -- "$temporary" "$destination"; then
+    rm -f -- "$temporary"
+    die "could not save profile '$name'"
+  fi
+
+  local display_count
+  display_count="$(print -r -- "$rows" | awk 'END { print NR }')"
+  print -- "Saved '$name' with $display_count display(s)."
+}
+
+load_profile() {
+  local name="$1"
+  local source header state current_rows role id options
+  integer current_count=0
+  integer profile_count=0
+  typeset -A current_ids
+  typeset -A profile_roles
+  typeset -a arguments
+
+  validate_name "$name"
+  source="$PROFILE_DIR/$name.profile"
+  [[ -r "$source" ]] || die "profile '$name' does not exist"
+
+  IFS= read -r header < "$source" || die "profile '$name' is empty"
+  [[ "$header" == "$PROFILE_HEADER" ]] || die "profile '$name' has an unsupported format"
+
+  state="$(read_display_state)"
+  current_rows="$(print -r -- "$state" | state_to_current_ids)"
+
+  while IFS=$'\t' read -r role id; do
+    [[ -n "$role" ]] || continue
+    [[ -z "${current_ids[$role]-}" ]] || die "connected display role '$role' is duplicated"
+    current_ids[$role]="$id"
+    (( current_count += 1 ))
+  done <<< "$current_rows"
+
+  while IFS=$'\t' read -r role options; do
+    [[ -n "$role" ]] || continue
+    [[ "$role" == "$PROFILE_HEADER" ]] && continue
+    [[ -n "$options" ]] || die "profile '$name' contains an invalid row for '$role'"
+    [[ -z "${profile_roles[$role]-}" ]] || die "profile '$name' duplicates role '$role'"
+    [[ -n "${current_ids[$role]-}" ]] || die "profile needs '$role', but it is not connected"
+
+    profile_roles[$role]=1
+    arguments+=("id:${current_ids[$role]} $options")
+    (( profile_count += 1 ))
+  done < "$source"
+
+  [[ "$profile_count" -gt 0 ]] || die "profile '$name' contains no displays"
+  if (( profile_count != current_count )); then
+    die "profile has $profile_count display(s), but $current_count are connected"
+  fi
+
+  "$DISPLAYPLACER_BIN" "${arguments[@]}" || die "displayplacer could not apply profile '$name'"
+  print -- "Loaded '$name' onto $profile_count connected display(s)."
+}
+
+list_profiles() {
+  local profile
+  typeset -a profiles
+
+  setopt local_options null_glob
+  profiles=("$PROFILE_DIR"/*.profile)
+
+  if (( ${#profiles[@]} == 0 )); then
+    print -- "No profiles saved."
+    return
+  fi
+
+  for profile in "${profiles[@]}"; do
+    print -- "${profile:t:r}"
+  done
+}
+
+main() {
+  local command="${1:-}"
+
+  case "$command" in
+    save)
+      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
+      save_profile "$2"
+      ;;
+    load)
+      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
+      load_profile "$2"
+      ;;
+    list)
+      [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }
+      list_profiles
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
