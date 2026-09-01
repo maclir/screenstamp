@@ -11,18 +11,25 @@ monitor.
 Screenstamp requires macOS and [Homebrew](https://brew.sh):
 
 ```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/maclir/screenstamp/main/install.sh)"
+```
+
+The installer adds
+[`displayplacer`](https://github.com/jakehilborn/displayplacer) through Homebrew
+when it is missing, then installs `screenstamp` into Homebrew's `bin` directory.
+Set `SCREENSTAMP_INSTALL_DIR` to override the destination.
+
+To install from a source checkout instead:
+
+```sh
 git clone https://github.com/maclir/screenstamp.git
 cd screenstamp
 make install
 ```
 
-`make install` installs
-[`displayplacer`](https://github.com/jakehilborn/displayplacer) through Homebrew
-when it is missing, then installs Screenstamp.
-
-By default, Screenstamp is installed as `~/.local/bin/screenstamp`. Override
-the destination with `make install PREFIX=/another/path`. Make sure the selected
-`bin` directory is on `PATH`.
+`make install` defaults to `~/.local/bin/screenstamp`; override it with
+`make install PREFIX=/another/path`. Make sure the selected `bin` directory is
+on `PATH`.
 
 ## Usage
 

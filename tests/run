@@ -161,5 +161,28 @@ else
   /bin/cat -- "$temporary_root/install.err" >&2
 fi
 
+script_install_dir="$temporary_root/script-install-bin"
+script_brew_capture="$temporary_root/script-brew-arguments.txt"
+if BREW_CAPTURE_FILE="$script_brew_capture" \
+  SCREENSTAMP_INSTALL_DIR="$script_install_dir" \
+  SCREENSTAMP_SOURCE_FILE="$COMMAND" \
+  DISPLAYPLACER=screenstamp-test-missing-displayplacer \
+  BREW="$MOCK_BREW" \
+  /bin/sh "$PROJECT_DIR/install.sh" \
+    > "$temporary_root/script-install.out" 2> "$temporary_root/script-install.err"; then
+  script_installed_command="$script_install_dir/screenstamp"
+  if [[ -x "$script_installed_command" ]] && \
+    [[ "$(<"$script_brew_capture")" == $'install\ndisplayplacer' ]] && \
+    grep -Fqx '  screenstamp save office' "$temporary_root/script-install.out" && \
+    grep -Fqx '  screenstamp load office' "$temporary_root/script-install.out"; then
+    pass "one-line installer installs displayplacer and screenstamp"
+  else
+    fail "one-line installer installs displayplacer and screenstamp"
+  fi
+else
+  fail "one-line installer installs displayplacer and screenstamp"
+  /bin/cat -- "$temporary_root/script-install.err" >&2
+fi
+
 print -- "$passed passed; $failed failed"
 (( failed == 0 ))
