@@ -39,7 +39,10 @@ install:
 	fi
 	@install -d "$(DESTDIR)$(BINDIR)"
 	@install -m 755 ./bin/screenstamp "$(DESTDIR)$(BINDIR)/screenstamp"
-	@echo "Installed screenstamp to $(DESTDIR)$(BINDIR)/screenstamp"
+	@echo
+	@echo "Screenstamp is ready:"
+	@echo "  screenstamp save office"
+	@echo "  screenstamp load office"
 
 save:
 	@$(call validate_profile_invocation)

@@ -148,6 +148,8 @@ if BREW_CAPTURE_FILE="$brew_capture" \
   installed_command="$install_prefix/bin/screenstamp"
   if [[ -x "$installed_command" ]] && \
     [[ "$(<"$brew_capture")" == $'install\ndisplayplacer' ]] && \
+    grep -Fqx '  screenstamp save office' "$temporary_root/install.out" && \
+    grep -Fqx '  screenstamp load office' "$temporary_root/install.out" && \
     SCREENSTAMP_PROFILE_DIR="$profile_dir" "$installed_command" list > "$temporary_root/installed-list.out" && \
     [[ "$(<"$temporary_root/installed-list.out")" == "office" ]]; then
     pass "make install installs displayplacer and a working screenstamp command"
