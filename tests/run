@@ -4,7 +4,7 @@ set -u
 
 readonly TEST_DIR="${0:A:h}"
 readonly PROJECT_DIR="${TEST_DIR:h}"
-readonly COMMAND="$PROJECT_DIR/bin/display-profile"
+readonly COMMAND="$PROJECT_DIR/bin/screenstamp"
 readonly MOCK="$TEST_DIR/mock-displayplacer"
 readonly FIXTURES="$TEST_DIR/fixtures"
 
@@ -33,13 +33,13 @@ assert_files_equal() {
   fi
 }
 
-temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/display-profile-tests.XXXXXX")" || exit 1
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/screenstamp-tests.XXXXXX")" || exit 1
 trap 'rm -rf -- "$temporary_root"' EXIT
 
 profile_dir="$temporary_root/profiles"
 mkdir -p -- "$profile_dir"
 
-if DISPLAY_PROFILE_DIR="$profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
   "$COMMAND" save office > "$temporary_root/save.out" 2> "$temporary_root/save.err"; then
@@ -55,7 +55,7 @@ assert_files_equal \
   "$profile_dir/office.profile"
 
 capture="$temporary_root/load-arguments.txt"
-if DISPLAY_PROFILE_DIR="$profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$capture" \
@@ -71,7 +71,7 @@ assert_files_equal \
   "$FIXTURES/expected-load-arguments.txt" \
   "$capture"
 
-if DISPLAY_PROFILE_DIR="$profile_dir" "$COMMAND" list > "$temporary_root/list.out"; then
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" "$COMMAND" list > "$temporary_root/list.out"; then
   if [[ "$(<"$temporary_root/list.out")" == "office" ]]; then
     pass "list prints saved profile names"
   else
@@ -81,7 +81,7 @@ else
   fail "list prints saved profile names"
 fi
 
-if DISPLAY_PROFILE_DIR="$profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
   "$COMMAND" save '../unsafe' > /dev/null 2>&1; then
@@ -91,7 +91,7 @@ else
 fi
 
 mismatch_capture="$temporary_root/mismatch-arguments.txt"
-if DISPLAY_PROFILE_DIR="$profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/extra-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$mismatch_capture" \
@@ -107,7 +107,7 @@ fi
 
 make_profile_dir="$temporary_root/make-profiles"
 mkdir -p -- "$make_profile_dir"
-if DISPLAY_PROFILE_DIR="$make_profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
   make -s -C "$PROJECT_DIR" save meeting-room > "$temporary_root/make.out" 2> "$temporary_root/make.err"; then
@@ -122,7 +122,7 @@ else
 fi
 
 make_capture="$temporary_root/make-load-arguments.txt"
-if DISPLAY_PROFILE_DIR="$make_profile_dir" \
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$make_capture" \
@@ -134,6 +134,21 @@ if DISPLAY_PROFILE_DIR="$make_profile_dir" \
 else
   fail "make load supports a positional profile name"
   /bin/cat -- "$temporary_root/make-load.err" >&2
+fi
+
+install_prefix="$temporary_root/install-prefix"
+if make -s -C "$PROJECT_DIR" install PREFIX="$install_prefix" > "$temporary_root/install.out" 2> "$temporary_root/install.err"; then
+  installed_command="$install_prefix/bin/screenstamp"
+  if [[ -x "$installed_command" ]] && \
+    SCREENSTAMP_PROFILE_DIR="$profile_dir" "$installed_command" list > "$temporary_root/installed-list.out" && \
+    [[ "$(<"$temporary_root/installed-list.out")" == "office" ]]; then
+    pass "make install creates a working screenstamp command"
+  else
+    fail "make install creates a working screenstamp command"
+  fi
+else
+  fail "make install creates a working screenstamp command"
+  /bin/cat -- "$temporary_root/install.err" >&2
 fi
 
 print -- "$passed passed; $failed failed"

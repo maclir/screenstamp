@@ -1,6 +1,9 @@
 SHELL := /bin/zsh
 .DEFAULT_GOAL := help
 
+PREFIX ?= $(HOME)/.local
+BINDIR ?= $(PREFIX)/bin
+
 ACTION := $(firstword $(MAKECMDGOALS))
 POSITIONAL_NAME := $(word 2,$(MAKECMDGOALS))
 POSITIONAL_GOALS := $(wordlist 2,999,$(MAKECMDGOALS))
@@ -10,11 +13,12 @@ ifneq ($(filter save load,$(ACTION)),)
 .PHONY: $(POSITIONAL_GOALS)
 endif
 
-.PHONY: help save load list test
+.PHONY: help install save load list test
 
 help:
-	@echo "Display profile manager"
+	@echo "Screenstamp — portable display layouts for macOS"
 	@echo
+	@echo "  make install           Install screenstamp into $(BINDIR)"
 	@echo "  make save office       Save the current layout as 'office'"
 	@echo "  make load office       Apply 'office' to the connected displays"
 	@echo "  make save NAME=office  Equivalent variable-based form"
@@ -22,16 +26,21 @@ help:
 	@echo "  make list              List saved profiles"
 	@echo "  make test              Run the full test suite"
 
+install:
+	@install -d "$(DESTDIR)$(BINDIR)"
+	@install -m 755 ./bin/screenstamp "$(DESTDIR)$(BINDIR)/screenstamp"
+	@echo "Installed screenstamp to $(DESTDIR)$(BINDIR)/screenstamp"
+
 save:
 	@$(call validate_profile_invocation)
-	@./bin/display-profile save "$(PROFILE_NAME)"
+	@./bin/screenstamp save "$(PROFILE_NAME)"
 
 load:
 	@$(call validate_profile_invocation)
-	@./bin/display-profile load "$(PROFILE_NAME)"
+	@./bin/screenstamp load "$(PROFILE_NAME)"
 
 list:
-	@./bin/display-profile list
+	@./bin/screenstamp list
 
 
 define validate_profile_invocation

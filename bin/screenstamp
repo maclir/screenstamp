@@ -2,23 +2,22 @@
 
 set -euo pipefail
 
-readonly SCRIPT_DIR="${0:A:h}"
-readonly PROJECT_DIR="${SCRIPT_DIR:h}"
-readonly PROFILE_DIR="${DISPLAY_PROFILE_DIR:-$PROJECT_DIR/profiles}"
+readonly SCREENSTAMP_CONFIG_PATH="${SCREENSTAMP_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/screenstamp}"
+readonly PROFILE_DIR="${SCREENSTAMP_PROFILE_DIR:-$SCREENSTAMP_CONFIG_PATH/profiles}"
 readonly DISPLAYPLACER_BIN="${DISPLAYPLACER_BIN:-displayplacer}"
-readonly PROFILE_HEADER="display-profile-v1"
+readonly PROFILE_HEADER="screenstamp-profile-v1"
 
 die() {
-  print -u2 -- "display-profile: $*"
+  print -u2 -- "screenstamp: $*"
   exit 1
 }
 
 usage() {
   cat <<'EOF'
 Usage:
-  display-profile save <name>
-  display-profile load <name>
-  display-profile list
+  screenstamp save <name>
+  screenstamp load <name>
+  screenstamp list
 
 Names may contain letters, numbers, dots, underscores, and hyphens.
 EOF
