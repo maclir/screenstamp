@@ -8,11 +8,13 @@ monitor.
 
 ## Install
 
-Install [`displayplacer`](https://github.com/jakehilborn/displayplacer), then
-install Screenstamp:
+Screenstamp requires macOS and
+[`displayplacer`](https://github.com/jakehilborn/displayplacer):
 
 ```sh
 brew install displayplacer
+git clone https://github.com/maclir/screenstamp.git
+cd screenstamp
 make install
 ```
 
