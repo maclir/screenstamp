@@ -75,3 +75,7 @@ make test
 ```
 
 The tests use a fake `displayplacer`; they do not modify the actual displays.
+
+## License
+
+[MIT](LICENSE) © 2026 Alireza Pazirandeh
