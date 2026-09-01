@@ -3,6 +3,8 @@ SHELL := /bin/zsh
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
+BREW ?= brew
+DISPLAYPLACER ?= displayplacer
 
 ACTION := $(firstword $(MAKECMDGOALS))
 POSITIONAL_NAME := $(word 2,$(MAKECMDGOALS))
@@ -18,7 +20,7 @@ endif
 help:
 	@echo "Screenstamp — portable display layouts for macOS"
 	@echo
-	@echo "  make install           Install screenstamp into $(BINDIR)"
+	@echo "  make install           Install displayplacer and screenstamp"
 	@echo "  make save office       Save the current layout as 'office'"
 	@echo "  make load office       Apply 'office' to the connected displays"
 	@echo "  make save NAME=office  Equivalent variable-based form"
@@ -27,6 +29,14 @@ help:
 	@echo "  make test              Run the full test suite"
 
 install:
+	@if ! command -v "$(DISPLAYPLACER)" >/dev/null 2>&1; then \
+		if ! command -v "$(BREW)" >/dev/null 2>&1; then \
+			echo "Homebrew is required to install displayplacer: https://brew.sh" >&2; \
+			exit 1; \
+		fi; \
+		echo "Installing required dependency: displayplacer"; \
+		"$(BREW)" install displayplacer; \
+	fi
 	@install -d "$(DESTDIR)$(BINDIR)"
 	@install -m 755 ./bin/screenstamp "$(DESTDIR)$(BINDIR)/screenstamp"
 	@echo "Installed screenstamp to $(DESTDIR)$(BINDIR)/screenstamp"

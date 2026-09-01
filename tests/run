@@ -6,6 +6,7 @@ readonly TEST_DIR="${0:A:h}"
 readonly PROJECT_DIR="${TEST_DIR:h}"
 readonly COMMAND="$PROJECT_DIR/bin/screenstamp"
 readonly MOCK="$TEST_DIR/mock-displayplacer"
+readonly MOCK_BREW="$TEST_DIR/mock-brew"
 readonly FIXTURES="$TEST_DIR/fixtures"
 
 integer passed=0
@@ -137,17 +138,24 @@ else
 fi
 
 install_prefix="$temporary_root/install-prefix"
-if make -s -C "$PROJECT_DIR" install PREFIX="$install_prefix" > "$temporary_root/install.out" 2> "$temporary_root/install.err"; then
+brew_capture="$temporary_root/brew-arguments.txt"
+if BREW_CAPTURE_FILE="$brew_capture" \
+  make -s -C "$PROJECT_DIR" install \
+    PREFIX="$install_prefix" \
+    DISPLAYPLACER=screenstamp-test-missing-displayplacer \
+    BREW="$MOCK_BREW" \
+    > "$temporary_root/install.out" 2> "$temporary_root/install.err"; then
   installed_command="$install_prefix/bin/screenstamp"
   if [[ -x "$installed_command" ]] && \
+    [[ "$(<"$brew_capture")" == $'install\ndisplayplacer' ]] && \
     SCREENSTAMP_PROFILE_DIR="$profile_dir" "$installed_command" list > "$temporary_root/installed-list.out" && \
     [[ "$(<"$temporary_root/installed-list.out")" == "office" ]]; then
-    pass "make install creates a working screenstamp command"
+    pass "make install installs displayplacer and a working screenstamp command"
   else
-    fail "make install creates a working screenstamp command"
+    fail "make install installs displayplacer and a working screenstamp command"
   fi
 else
-  fail "make install creates a working screenstamp command"
+  fail "make install installs displayplacer and a working screenstamp command"
   /bin/cat -- "$temporary_root/install.err" >&2
 fi
 

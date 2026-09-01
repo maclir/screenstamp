@@ -1,0 +1,13 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+[[ -n "${BREW_CAPTURE_FILE:-}" ]] || {
+  print -u2 -- "BREW_CAPTURE_FILE is required"
+  exit 2
+}
+
+: > "$BREW_CAPTURE_FILE"
+for argument in "$@"; do
+  print -r -- "$argument" >> "$BREW_CAPTURE_FILE"
+done
