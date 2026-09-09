@@ -2,9 +2,11 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="${0:A:h}"
 readonly SCREENSTAMP_CONFIG_PATH="${SCREENSTAMP_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/screenstamp}"
 readonly PROFILE_DIR="${SCREENSTAMP_PROFILE_DIR:-$SCREENSTAMP_CONFIG_PATH/profiles}"
 readonly DISPLAYPLACER_BIN="${DISPLAYPLACER_BIN:-displayplacer}"
+readonly APP_HELPER_BIN="${SCREENSTAMP_APP_HELPER_BIN:-}"
 readonly PROFILE_HEADER="screenstamp-profile-v1"
 
 die() {
@@ -17,6 +19,9 @@ usage() {
 Usage:
   screenstamp save <name>
   screenstamp load <name>
+  screenstamp save-apps <name>
+  screenstamp load-apps <name>
+  screenstamp permissions
   screenstamp list
 
 Names may contain letters, numbers, dots, underscores, and hyphens.
@@ -37,6 +42,28 @@ require_displayplacer() {
   elif ! command -v "$DISPLAYPLACER_BIN" >/dev/null 2>&1; then
     die "displayplacer was not found; install it with: brew install displayplacer"
   fi
+}
+
+get_app_helper() {
+  if [[ -n "$APP_HELPER_BIN" ]]; then
+    print -r -- "$APP_HELPER_BIN"
+    return 0
+  fi
+  if [[ -x "$SCRIPT_DIR/screenstamp-app-helper" ]]; then
+    print -r -- "$SCRIPT_DIR/screenstamp-app-helper"
+    return 0
+  fi
+  if [[ -f "$SCRIPT_DIR/screenstamp-app-helper.swift" ]] && command -v swift >/dev/null 2>&1; then
+    print -r -- "swift $SCRIPT_DIR/screenstamp-app-helper.swift"
+    return 0
+  fi
+  return 1
+}
+
+check_permissions() {
+  local helper
+  helper="$(get_app_helper 2>/dev/null)" || die "screenstamp app helper is missing"
+  eval "$helper permissions"
 }
 
 read_display_state() {
@@ -106,6 +133,41 @@ state_to_profile_rows() {
   '
 }
 
+# Extract JSON of display geometries (origin, size) keyed by role.
+state_to_displays_json() {
+  awk '
+    BEGIN { print "{" }
+    /^Type: / {
+      if ($0 == "Type: MacBook built in screen") {
+        kind = "builtin"
+      } else if ($0 ~ /external screen$/) {
+        kind = "external"
+      } else {
+        kind = ""
+      }
+      if (kind != "") {
+        count[kind]++
+        role = kind "-" count[kind]
+      }
+      next
+    }
+    /^Resolution: / { res = $2; next }
+    /^Origin: / { orig = $2; next }
+    /^Enabled: true/ {
+      if (role != "" && res != "" && orig != "") {
+        split(res, r, "x")
+        gsub(/[()]/, "", orig)
+        split(orig, o, ",")
+        if (sep) print ","
+        printf "\"%s\":{\"x\":%s,\"y\":%s,\"w\":%s,\"h\":%s}", role, o[1], o[2], r[1], r[2]
+        sep = 1
+        role = ""; res = ""; orig = ""
+      }
+    }
+    END { print "\n}" }
+  '
+}
+
 # Extract the IDs for the displays connected at load time using the same roles.
 state_to_current_ids() {
   awk '
@@ -129,9 +191,25 @@ state_to_current_ids() {
   '
 }
 
+save_apps() {
+  local name="$1"
+  local state displays_json_file helper
+
+  validate_name "$name"
+  helper="$(get_app_helper 2>/dev/null)" || die "screenstamp app helper is missing"
+  state="$(read_display_state)"
+
+  mkdir -p -- "$PROFILE_DIR"
+  displays_json_file="$(mktemp "${TMPDIR:-/tmp}/screenstamp-displays.XXXXXX")"
+  print -r -- "$state" | state_to_displays_json > "$displays_json_file"
+  eval "$helper save \"$displays_json_file\" \"$PROFILE_DIR/$name.apps\"" || die "could not save app placements"
+  rm -f -- "$displays_json_file"
+}
+
 save_profile() {
   local name="$1"
   local state rows destination temporary
+  local helper displays_json_file
 
   validate_name "$name"
   state="$(read_display_state)"
@@ -158,6 +236,29 @@ save_profile() {
   local display_count
   display_count="$(print -r -- "$rows" | awk 'END { print NR }')"
   print -- "Saved '$name' with $display_count display(s)."
+
+  if helper="$(get_app_helper 2>/dev/null)"; then
+    displays_json_file="$(mktemp "${TMPDIR:-/tmp}/screenstamp-displays.XXXXXX")"
+    print -r -- "$state" | state_to_displays_json > "$displays_json_file"
+    eval "$helper save \"$displays_json_file\" \"$PROFILE_DIR/$name.apps\"" || print -u2 -- "screenstamp: could not save app placements"
+    rm -f -- "$displays_json_file"
+  fi
+}
+
+load_apps() {
+  local name="$1"
+  local apps_file="$PROFILE_DIR/$name.apps"
+  local helper state displays_json_file
+
+  validate_name "$name"
+  [[ -r "$apps_file" ]] || die "apps profile for '$name' does not exist"
+
+  helper="$(get_app_helper 2>/dev/null)" || die "screenstamp app helper is missing"
+  state="$(read_display_state)"
+  displays_json_file="$(mktemp "${TMPDIR:-/tmp}/screenstamp-displays.XXXXXX")"
+  print -r -- "$state" | state_to_displays_json > "$displays_json_file"
+  eval "$helper load \"$displays_json_file\" \"$apps_file\"" || die "could not restore app placements"
+  rm -f -- "$displays_json_file"
 }
 
 load_profile() {
@@ -205,6 +306,10 @@ load_profile() {
 
   "$DISPLAYPLACER_BIN" "${arguments[@]}" || die "displayplacer could not apply profile '$name'"
   print -- "Loaded '$name' onto $profile_count connected display(s)."
+
+  if [[ -r "$PROFILE_DIR/$name.apps" ]]; then
+    load_apps "$name"
+  fi
 }
 
 list_profiles() {
@@ -232,9 +337,21 @@ main() {
       [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
       save_profile "$2"
       ;;
+    save-apps)
+      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
+      save_apps "$2"
+      ;;
     load)
       [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
       load_profile "$2"
+      ;;
+    load-apps|apps)
+      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
+      load_apps "$2"
+      ;;
+    permissions)
+      [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }
+      check_permissions
       ;;
     list)
       [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }

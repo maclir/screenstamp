@@ -7,6 +7,7 @@ readonly PROJECT_DIR="${TEST_DIR:h}"
 readonly COMMAND="$PROJECT_DIR/bin/screenstamp"
 readonly MOCK="$TEST_DIR/mock-displayplacer"
 readonly MOCK_BREW="$TEST_DIR/mock-brew"
+readonly MOCK_HELPER="$TEST_DIR/mock-app-helper"
 readonly FIXTURES="$TEST_DIR/fixtures"
 
 integer passed=0
@@ -40,9 +41,12 @@ trap 'rm -rf -- "$temporary_root"' EXIT
 profile_dir="$temporary_root/profiles"
 mkdir -p -- "$profile_dir"
 
+helper_save_capture="$temporary_root/helper-save.txt"
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_save_capture" \
   "$COMMAND" save office > "$temporary_root/save.out" 2> "$temporary_root/save.err"; then
   pass "save accepts a displayplacer layout"
 else
@@ -55,11 +59,37 @@ assert_files_equal \
   "$FIXTURES/expected-office.profile" \
   "$profile_dir/office.profile"
 
+if [[ -f "$profile_dir/office.apps" ]] && grep -q '"app_name": "iTerm2"' "$profile_dir/office.apps"; then
+  pass "save captures app placements alongside display settings"
+else
+  fail "save captures app placements alongside display settings"
+fi
+
+helper_save_apps_capture="$temporary_root/helper-save-apps.txt"
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_save_apps_capture" \
+  "$COMMAND" save-apps custom-apps > "$temporary_root/save-apps.out" 2> "$temporary_root/save-apps.err"; then
+  if [[ -f "$profile_dir/custom-apps.apps" ]] && grep -q "^save " "$helper_save_apps_capture"; then
+    pass "save-apps saves only app placements"
+  else
+    fail "save-apps saves only app placements"
+  fi
+else
+  fail "save-apps saves only app placements"
+  /bin/cat -- "$temporary_root/save-apps.err" >&2
+fi
+
 capture="$temporary_root/load-arguments.txt"
+helper_load_capture="$temporary_root/helper-load.txt"
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_load_capture" \
   "$COMMAND" load office > "$temporary_root/load.out" 2> "$temporary_root/load.err"; then
   pass "load accepts different physical monitor IDs"
 else
@@ -71,6 +101,43 @@ assert_files_equal \
   "load applies the saved settings to the currently connected IDs" \
   "$FIXTURES/expected-load-arguments.txt" \
   "$capture"
+
+if [[ -f "$helper_load_capture" ]] && grep -q "^load " "$helper_load_capture"; then
+  pass "load invokes app placement helper"
+else
+  fail "load invokes app placement helper"
+fi
+
+helper_load_apps_capture="$temporary_root/helper-load-apps.txt"
+load_apps_display_capture="$temporary_root/load-apps-display.txt"
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$load_apps_display_capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_load_apps_capture" \
+  "$COMMAND" load-apps office > "$temporary_root/load-apps.out" 2> "$temporary_root/load-apps.err"; then
+  if [[ ! -e "$load_apps_display_capture" ]] && grep -q "^load " "$helper_load_apps_capture"; then
+    pass "load-apps restores app placements without calling displayplacer"
+  else
+    fail "load-apps restores app placements without calling displayplacer"
+  fi
+else
+  fail "load-apps restores app placements without calling displayplacer"
+  /bin/cat -- "$temporary_root/load-apps.err" >&2
+fi
+
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  "$COMMAND" permissions > "$temporary_root/perms.out"; then
+  if grep -q "Accessibility permissions: OK" "$temporary_root/perms.out"; then
+    pass "permissions command queries accessibility status"
+  else
+    fail "permissions command queries accessibility status"
+  fi
+else
+  fail "permissions command queries accessibility status"
+fi
 
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" "$COMMAND" list > "$temporary_root/list.out"; then
   if [[ "$(<"$temporary_root/list.out")" == "office" ]]; then
@@ -85,6 +152,7 @@ fi
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
   "$COMMAND" save '../unsafe' > /dev/null 2>&1; then
   fail "save rejects unsafe profile names"
 else
@@ -96,6 +164,7 @@ if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/extra-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$mismatch_capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
   "$COMMAND" load office > /dev/null 2> "$temporary_root/mismatch.err"; then
   fail "load rejects a different number of connected displays"
 else
@@ -111,6 +180,7 @@ mkdir -p -- "$make_profile_dir"
 if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
   make -s -C "$PROJECT_DIR" save meeting-room > "$temporary_root/make.out" 2> "$temporary_root/make.err"; then
   if [[ -f "$make_profile_dir/meeting-room.profile" ]]; then
     pass "make save supports a positional profile name"
@@ -122,11 +192,27 @@ else
   /bin/cat -- "$temporary_root/make.err" >&2
 fi
 
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  make -s -C "$PROJECT_DIR" save-apps meeting-room > "$temporary_root/make-save-apps.out" 2> "$temporary_root/make-save-apps.err"; then
+  if [[ -f "$make_profile_dir/meeting-room.apps" ]]; then
+    pass "make save-apps supports a positional profile name"
+  else
+    fail "make save-apps supports a positional profile name"
+  fi
+else
+  fail "make save-apps supports a positional profile name"
+  /bin/cat -- "$temporary_root/make-save-apps.err" >&2
+fi
+
 make_capture="$temporary_root/make-load-arguments.txt"
 if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
   DISPLAYPLACER_CAPTURE_FILE="$make_capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
   make -s -C "$PROJECT_DIR" load meeting-room > "$temporary_root/make-load.out" 2> "$temporary_root/make-load.err"; then
   assert_files_equal \
     "make load supports a positional profile name" \
@@ -135,6 +221,17 @@ if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
 else
   fail "make load supports a positional profile name"
   /bin/cat -- "$temporary_root/make-load.err" >&2
+fi
+
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  make -s -C "$PROJECT_DIR" load-apps meeting-room > "$temporary_root/make-apps.out" 2> "$temporary_root/make-apps.err"; then
+  pass "make load-apps supports a positional profile name"
+else
+  fail "make load-apps supports a positional profile name"
+  /bin/cat -- "$temporary_root/make-apps.err" >&2
 fi
 
 install_prefix="$temporary_root/install-prefix"

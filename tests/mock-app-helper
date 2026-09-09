@@ -1,0 +1,39 @@
+#!/bin/zsh
+
+set -eu
+
+readonly CAPTURE="${APP_HELPER_CAPTURE_FILE:-}"
+
+if [[ -n "$CAPTURE" ]]; then
+  print -r -- "$*" >> "$CAPTURE"
+fi
+
+case "${1:-}" in
+  permissions)
+    print -- "Accessibility permissions: OK"
+    ;;
+  save)
+    local out="${3:-}"
+    if [[ -n "$out" ]]; then
+      cat <<'APPS_JSON' > "$out"
+[
+  {
+    "app_name": "iTerm2",
+    "bundle_id": "com.googlecode.iterm2",
+    "display_role": "external-1",
+    "fullscreen": true,
+    "rel_h": 1.0,
+    "rel_w": 1.0,
+    "rel_x": 0.0,
+    "rel_y": 0.0,
+    "type": "app"
+  }
+]
+APPS_JSON
+      print -- "Saved 1 app placement(s)."
+    fi
+    ;;
+  load)
+    print -- "Restored app placements."
+    ;;
+esac
