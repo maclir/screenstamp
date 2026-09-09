@@ -150,6 +150,49 @@ func findDisplayRole(x: Double, y: Double, w: Double, h: Double, displays: [Stri
     return bestRole
 }
 
+func printAppSummary(entries: [WindowEntry], action: String) {
+    guard !entries.isEmpty else {
+        print("\(action) 0 app placement(s).")
+        return
+    }
+    print("\(action) \(entries.count) app placement(s):")
+
+    var labels: [(name: String, target: String)] = []
+    var maxNameLen = 0
+
+    for entry in entries {
+        let nameStr: String
+        if entry.type == "chrome_profile" {
+            let pName = entry.profile_name ?? entry.profile_dir ?? ""
+            nameStr = "Google Chrome (\(pName))"
+        } else if entry.type == "pwa" {
+            nameStr = "\(entry.app_name) (PWA)"
+        } else {
+            nameStr = entry.app_name
+        }
+
+        let targetStr: String
+        if entry.fullscreen {
+            targetStr = "\(entry.display_role) (Fullscreen)"
+        } else {
+            let xStr = String(format: "%.2f", entry.rel_x)
+            let yStr = String(format: "%.2f", entry.rel_y)
+            targetStr = "\(entry.display_role) (Desktop side: x=\(xStr), y=\(yStr))"
+        }
+
+        if nameStr.count > maxNameLen {
+            maxNameLen = nameStr.count
+        }
+        labels.append((name: nameStr, target: targetStr))
+    }
+
+    let colWidth = max(maxNameLen + 2, 24)
+    for label in labels {
+        let padded = label.name.padding(toLength: colWidth, withPad: " ", startingAt: 0)
+        print("  • \(padded) -> \(label.target)")
+    }
+}
+
 // MARK: - Save
 
 func saveApps(displaysPath: String, outputPath: String) {
@@ -320,7 +363,7 @@ func saveApps(displaysPath: String, outputPath: String) {
 
     do {
         try data.write(to: URL(fileURLWithPath: outputPath))
-        print("Saved \(entries.count) app placement(s).")
+        printAppSummary(entries: entries, action: "Saved")
     } catch {
         printErr("screenstamp: could not write apps file: \(error)")
         exit(1)
@@ -489,7 +532,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
         }
     }
 
-    print("Restored app placements.")
+    printAppSummary(entries: entries, action: "Restored")
 }
 
 // MARK: - Main

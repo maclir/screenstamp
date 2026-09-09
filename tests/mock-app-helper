@@ -30,10 +30,16 @@ case "${1:-}" in
   }
 ]
 APPS_JSON
-      print -- "Saved 1 app placement(s)."
+      cat <<'SUMMARY'
+Saved 1 app placement(s):
+  • iTerm2                 -> external-1 (Fullscreen)
+SUMMARY
     fi
     ;;
   load)
-    print -- "Restored app placements."
+    cat <<'SUMMARY'
+Restored 1 app placement(s):
+  • iTerm2                 -> external-1 (Fullscreen)
+SUMMARY
     ;;
 esac
