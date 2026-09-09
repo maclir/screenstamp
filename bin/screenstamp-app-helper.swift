@@ -80,6 +80,40 @@ func loadChromeProfiles() -> [(dir: String, name: String, matches: [String])] {
     return profiles
 }
 
+func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Double, title: String)] {
+    var result: [(x: Double, y: Double, w: Double, h: Double, title: String)] = []
+    let chromeScript = """
+    tell application "Google Chrome"
+        set out to ""
+        repeat with w in windows
+            set b to bounds of w
+            set n to name of w
+            set out to out & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "|" & n & "\\n"
+        end repeat
+        return out
+    end tell
+    """
+    if let appleScript = NSAppleScript(source: chromeScript) {
+        var error: NSDictionary?
+        let res = appleScript.executeAndReturnError(&error)
+        if let str = res.stringValue {
+            for line in str.split(separator: "\n") {
+                let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                let coords = parts[0].split(separator: ",").compactMap { Double($0) }
+                if coords.count == 4 {
+                    let title = parts.count > 1 ? String(parts[1]) : ""
+                    let x = coords[0]
+                    let y = coords[1]
+                    let w = coords[2] - coords[0]
+                    let h = coords[3] - coords[1]
+                    result.append((x: x, y: y, w: w, h: h, title: title))
+                }
+            }
+        }
+    }
+    return result
+}
+
 func findDisplayRole(x: Double, y: Double, w: Double, h: Double, displays: [String: DisplayGeom]) -> String? {
     let midX = x + w / 2.0
     let midY = y + h / 2.0
@@ -126,134 +160,154 @@ func saveApps(displaysPath: String, outputPath: String) {
 
     let displays = parseDisplays(from: displaysPath)
     let chromeProfiles = loadChromeProfiles()
+    let chromeWindows = queryChromeWindowsAppleScript()
     var entries: [WindowEntry] = []
 
-    let ignoredBundleIds: Set<String> = [
-        "com.apple.finder",
-        "com.apple.dock",
-        "com.apple.controlcenter",
-        "com.apple.notificationcenterui",
-        "com.apple.Spotlight",
-        "com.apple.loginwindow",
-        "com.apple.SystemUIServer",
-        "com.apple.WindowManager"
+    let ignoredOwners: Set<String> = [
+        "Window Server", "Dock", "Spotlight", "ControlCenter", "NotificationCenter",
+        "SystemUIServer", "CursorUIViewService", "AutoFill", "Wi-Fi", "loginwindow",
+        "WindowManager", "AirPlay", "screencapture", "TextInputMenuAgent"
     ]
 
-    for app in NSWorkspace.shared.runningApplications {
-        guard app.activationPolicy == .regular else { continue }
-        guard let bundleId = app.bundleIdentifier, !ignoredBundleIds.contains(bundleId) else { continue }
+    // Query all on-screen and space windows via CGWindowList
+    guard let rawWins = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        printErr("screenstamp: could not query window list from WindowServer")
+        exit(1)
+    }
 
-        let pid = app.processIdentifier
-        let appElement = AXUIElementCreateApplication(pid)
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
-              let windows = winRef as? [AXUIElement] else { continue }
+    // Sort by area descending so primary windows take precedence over auxiliary popups
+    let sortedWins = rawWins.filter {
+        ($0[kCGWindowLayer as String] as? Int ?? -1) == 0
+    }.sorted {
+        let b1 = $0[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let b2 = $1[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let a1 = (b1["Width"] as? Double ?? 0) * (b1["Height"] as? Double ?? 0)
+        let a2 = (b2["Width"] as? Double ?? 0) * (b2["Height"] as? Double ?? 0)
+        return a1 > a2
+    }
 
-        let isChrome = (bundleId == "com.google.Chrome")
+    var seenChromeProfiles = Set<String>()
+    var seenAppsPerRole = Set<String>()
+
+    for w in sortedWins {
+        let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+        guard !ignoredOwners.contains(owner) else { continue }
+
+        let bounds = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let x = bounds["X"] as? Double ?? 0
+        let y = bounds["Y"] as? Double ?? 0
+        let width = bounds["Width"] as? Double ?? 0
+        let height = bounds["Height"] as? Double ?? 0
+
+        // Skip small auxiliary floating overlays and menus
+        guard width >= 250 && height >= 150 else { continue }
+
+        let pid = w[kCGWindowOwnerPID as String] as? pid_t ?? 0
+        let app = NSRunningApplication(processIdentifier: pid)
+        let bundleId = app?.bundleIdentifier ?? ""
+        let appName = app?.localizedName ?? owner
+
+        guard let role = findDisplayRole(x: x, y: y, w: width, h: height, displays: displays),
+              let geom = displays[role] else { continue }
+
+        let isFs = (abs(width - geom.w) <= 25.0) && (height >= geom.h * 0.75)
+        let relX = max(0.0, min(1.0, (x - geom.x) / geom.w))
+        let relY = max(0.0, min(1.0, (y - geom.y) / geom.h))
+        let relW = max(0.05, min(1.0, width / geom.w))
+        let relH = max(0.05, min(1.0, height / geom.h))
+
         let isPwa = bundleId.hasPrefix("com.google.Chrome.app.") ||
-                    (app.bundleURL?.path.contains("Chrome Apps") == true)
+                    (app?.bundleURL?.path.contains("Chrome Apps") == true) ||
+                    owner.contains("Google Calendar") ||
+                    owner.contains("Google Meet")
 
-        for win in windows {
-            var roleRef: CFTypeRef?
-            var subroleRef: CFTypeRef?
-            var posRef: CFTypeRef?
-            var sizeRef: CFTypeRef?
-            var fullRef: CFTypeRef?
-            var titleRef: CFTypeRef?
+        if isPwa {
+            let key = "\(bundleId.isEmpty ? owner : bundleId):\(role)"
+            if seenAppsPerRole.contains(key) { continue }
+            seenAppsPerRole.insert(key)
 
-            AXUIElementCopyAttributeValue(win, kAXRoleAttribute as CFString, &roleRef)
-            AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleRef)
-            AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef)
-            AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef)
-            AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &fullRef)
-            AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
-
-            let role = (roleRef as? String) ?? ""
-            let subrole = (subroleRef as? String) ?? ""
-            guard role == "AXWindow" else { continue }
-            if subrole == "AXUnknown" && (titleRef as? String ?? "").isEmpty { continue }
-
-            var pos = CGPoint.zero
-            var size = CGSize.zero
-            if let p = posRef { AXValueGetValue(p as! AXValue, .cgPoint, &pos) }
-            if let s = sizeRef { AXValueGetValue(s as! AXValue, .cgSize, &size) }
-            let isFs = (fullRef as? Bool) ?? false
-            let title = (titleRef as? String) ?? ""
-
-            // Skip tiny/invisible accessory windows
-            if size.width < 100 || size.height < 100 { continue }
-
-            guard let displayRole = findDisplayRole(x: pos.x, y: pos.y, w: size.width, h: size.height, displays: displays),
-                  let geom = displays[displayRole] else { continue }
-
-            let relX = max(0.0, min(1.0, (pos.x - geom.x) / geom.w))
-            let relY = max(0.0, min(1.0, (pos.y - geom.y) / geom.h))
-            let relW = max(0.05, min(1.0, size.width / geom.w))
-            let relH = max(0.05, min(1.0, size.height / geom.h))
-
-            if isPwa {
-                entries.append(WindowEntry(
-                    type: "pwa",
-                    bundle_id: bundleId,
-                    app_name: app.localizedName ?? "PWA",
-                    app_path: app.bundleURL?.path,
-                    profile_dir: nil,
-                    profile_name: nil,
-                    display_role: displayRole,
-                    fullscreen: isFs,
-                    rel_x: relX,
-                    rel_y: relY,
-                    rel_w: relW,
-                    rel_h: relH
-                ))
-            } else if isChrome {
-                // Match profile from title suffix e.g. " - Google Chrome - <ProfileName>"
-                var matchedDir = "Default"
-                var matchedName = "Default"
-
-                for prof in chromeProfiles {
-                    var found = false
-                    for match in prof.matches {
-                        if title.contains(" - \(match)") || title.contains(" - Google Chrome - \(match)") {
-                            matchedDir = prof.dir
-                            matchedName = prof.name
-                            found = true
-                            break
-                        }
-                    }
-                    if found { break }
+            entries.append(WindowEntry(
+                type: "pwa",
+                bundle_id: bundleId.isEmpty ? "com.google.Chrome.app" : bundleId,
+                app_name: appName,
+                app_path: app?.bundleURL?.path,
+                profile_dir: nil,
+                profile_name: nil,
+                display_role: role,
+                fullscreen: isFs,
+                rel_x: relX,
+                rel_y: relY,
+                rel_w: relW,
+                rel_h: relH
+            ))
+        } else if bundleId == "com.google.Chrome" || owner == "Google Chrome" {
+            // Find matching Chrome window from AppleScript
+            var matchedTitle = ""
+            var bestDiff = Double.infinity
+            for cw in chromeWindows {
+                let diff = abs(cw.x - x) + abs(cw.y - y) + abs(cw.w - width) + abs(cw.h - height)
+                if diff < bestDiff {
+                    bestDiff = diff
+                    matchedTitle = cw.title
                 }
-
-                entries.append(WindowEntry(
-                    type: "chrome_profile",
-                    bundle_id: bundleId,
-                    app_name: "Google Chrome",
-                    app_path: app.bundleURL?.path,
-                    profile_dir: matchedDir,
-                    profile_name: matchedName,
-                    display_role: displayRole,
-                    fullscreen: isFs,
-                    rel_x: relX,
-                    rel_y: relY,
-                    rel_w: relW,
-                    rel_h: relH
-                ))
-            } else {
-                entries.append(WindowEntry(
-                    type: "app",
-                    bundle_id: bundleId,
-                    app_name: app.localizedName ?? bundleId,
-                    app_path: app.bundleURL?.path,
-                    profile_dir: nil,
-                    profile_name: nil,
-                    display_role: displayRole,
-                    fullscreen: isFs,
-                    rel_x: relX,
-                    rel_y: relY,
-                    rel_w: relW,
-                    rel_h: relH
-                ))
             }
+
+            // Skip PWA windows mirrored inside Google Chrome
+            if matchedTitle.isEmpty && (appName.contains("Calendar") || appName.contains("Meet")) {
+                continue
+            }
+
+            // Match profile
+            var matchedDir = "Default"
+            var matchedName = "Personal"
+            for prof in chromeProfiles {
+                for m in prof.matches {
+                    if matchedTitle.localizedCaseInsensitiveContains(m) ||
+                       (prof.dir == "Profile 1" && (matchedTitle.contains("Spotify") || matchedTitle.contains("Workday"))) {
+                        matchedDir = prof.dir
+                        matchedName = prof.name
+                        break
+                    }
+                }
+            }
+
+            if seenChromeProfiles.contains(matchedDir) { continue }
+            seenChromeProfiles.insert(matchedDir)
+
+            entries.append(WindowEntry(
+                type: "chrome_profile",
+                bundle_id: "com.google.Chrome",
+                app_name: "Google Chrome",
+                app_path: app?.bundleURL?.path,
+                profile_dir: matchedDir,
+                profile_name: matchedName,
+                display_role: role,
+                fullscreen: isFs,
+                rel_x: relX,
+                rel_y: relY,
+                rel_w: relW,
+                rel_h: relH
+            ))
+        } else {
+            guard let bId = app?.bundleIdentifier, !bId.isEmpty else { continue }
+            let key = "\(bId):\(role)"
+            if seenAppsPerRole.contains(key) { continue }
+            seenAppsPerRole.insert(key)
+
+            entries.append(WindowEntry(
+                type: "app",
+                bundle_id: bId,
+                app_name: appName,
+                app_path: app?.bundleURL?.path,
+                profile_dir: nil,
+                profile_name: nil,
+                display_role: role,
+                fullscreen: isFs,
+                rel_x: relX,
+                rel_y: relY,
+                rel_w: relW,
+                rel_h: relH
+            ))
         }
     }
 
@@ -280,7 +334,6 @@ func launchMissingApps(entries: [WindowEntry]) {
     let runningBundleIds = Set(running.compactMap { $0.bundleIdentifier })
     var launchedAny = false
 
-    // 1. Regular apps & PWAs
     for entry in entries {
         if entry.type == "app" || entry.type == "pwa" {
             if !runningBundleIds.contains(entry.bundle_id) {
@@ -342,12 +395,17 @@ func restoreApps(displaysPath: String, inputPath: String) {
         if entry.type == "chrome_profile" {
             candidateApps = running.filter { $0.bundleIdentifier == "com.google.Chrome" }
         } else if entry.type == "pwa" {
-            candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id }
+            candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id || $0.localizedName == entry.app_name }
         } else {
             candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id }
         }
 
         guard let targetApp = candidateApps.first else { continue }
+        
+        // Ensure app window is brought to accessibility context
+        targetApp.activate()
+        usleep(100_000)
+
         let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
         var winRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
