@@ -919,6 +919,89 @@ func activateChromeWindow(profileDir: String, profiles: [(dir: String, name: Str
     return (bestAxWin ?? candidateWindows.first, targetWin.winId)
 }
 
+func getDisplaysWithOutOfOrderSpaces(displays: [String: DisplayGeom], sortedEntries: [WindowEntry], running: [NSRunningApplication]) -> Set<String> {
+    var outOfOrderDisplays = Set<String>()
+    let cid = CGSMainConnectionID()
+    guard let spacesArr = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return outOfOrderDisplays }
+
+    var displayCount: UInt32 = 0
+    CGGetOnlineDisplayList(0, nil, &displayCount)
+    var dList = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+    CGGetOnlineDisplayList(displayCount, &dList, &displayCount)
+
+    var uuidToRole: [String: String] = [:]
+    for d in dList {
+        guard let uuidRef = CGDisplayCreateUUIDFromDisplayID(d)?.takeRetainedValue() else { continue }
+        let uuidStr = CFUUIDCreateString(nil, uuidRef) as String
+        let bounds = CGDisplayBounds(d)
+        if let role = findDisplayRole(x: bounds.origin.x, y: bounds.origin.y, w: bounds.width, h: bounds.height, displays: displays) {
+            uuidToRole[uuidStr] = role
+        }
+    }
+
+    var roleToSpaces: [String: [(wid: Int, pid: pid_t, spaceIdx: Int)]] = [:]
+    for d in spacesArr {
+        guard let dispId = d["Display Identifier"] as? String,
+              let role = uuidToRole[dispId],
+              let sps = d["Spaces"] as? [[String: Any]] else { continue }
+        var list: [(wid: Int, pid: pid_t, spaceIdx: Int)] = []
+        for (idx, sp) in sps.enumerated() {
+            if (sp["type"] as? Int) == 4 {
+                let wid = sp["fs_wid"] as? Int ?? 0
+                let pid = sp["pid"] as? pid_t ?? 0
+                list.append((wid: wid, pid: pid, spaceIdx: idx))
+            }
+        }
+        roleToSpaces[role] = list
+    }
+
+    let grouped = Dictionary(grouping: sortedEntries.filter { $0.fullscreen }, by: { $0.display_role })
+
+    for (role, roleEntries) in grouped {
+        guard roleEntries.count > 1, let curSpaces = roleToSpaces[role], !curSpaces.isEmpty else { continue }
+        var foundIndices: [Int] = []
+        var allFound = true
+
+        for entry in roleEntries {
+            var matchedIdx: Int? = nil
+            let candidateApps: [NSRunningApplication]
+            if entry.type == "chrome_profile" {
+                candidateApps = running.filter { $0.bundleIdentifier == "com.google.Chrome" }
+            } else if entry.type == "pwa" {
+                candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id || $0.localizedName == entry.app_name }
+            } else {
+                candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id }
+            }
+            let pid = candidateApps.first?.processIdentifier ?? 0
+
+            for cs in curSpaces {
+                if cs.pid == pid {
+                    matchedIdx = cs.spaceIdx
+                    break
+                }
+            }
+
+            if let idx = matchedIdx {
+                foundIndices.append(idx)
+            } else {
+                allFound = false
+                break
+            }
+        }
+
+        if allFound && foundIndices.count == roleEntries.count {
+            for i in 0..<(foundIndices.count - 1) {
+                if foundIndices[i] > foundIndices[i + 1] {
+                    outOfOrderDisplays.insert(role)
+                    break
+                }
+            }
+        }
+    }
+
+    return outOfOrderDisplays
+}
+
 func restoreApps(displaysPath: String, inputPath: String) {
     if !checkAccessibility(prompt: true) {
         printErr("screenstamp: Accessibility permissions are not yet enabled. Enable them in System Settings, then retry.")
@@ -954,6 +1037,50 @@ func restoreApps(displaysPath: String, inputPath: String) {
             return s0 < s1
         }
         return $0.app_name < $1.app_name
+    }
+
+    let outOfOrderDisplays = getDisplaysWithOutOfOrderSpaces(displays: displays, sortedEntries: sortedEntries, running: running)
+    if !outOfOrderDisplays.isEmpty {
+        for role in outOfOrderDisplays {
+            let roleEntries = sortedEntries.filter { $0.display_role == role && $0.fullscreen }
+            for entry in roleEntries {
+                let candidateApps: [NSRunningApplication]
+                if entry.type == "chrome_profile" {
+                    candidateApps = running.filter { $0.bundleIdentifier == "com.google.Chrome" }
+                } else if entry.type == "pwa" {
+                    candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id || $0.localizedName == entry.app_name }
+                } else {
+                    candidateApps = running.filter { $0.bundleIdentifier == entry.bundle_id }
+                }
+                guard let targetApp = candidateApps.first else { continue }
+                if let spaceInfo = findSpaceForPid(targetApp.processIdentifier) {
+                    let cid = CGSMainConnectionID()
+                    CGSManagedDisplaySetCurrentSpace(cid, spaceInfo.dispId as CFString, spaceInfo.spaceId)
+                    usleep(150_000)
+                }
+                let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
+                var wRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &wRef) != .success || wRef == nil {
+                    var wsRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &wsRef)
+                    wRef = (wsRef as? [AXUIElement])?.first
+                }
+                if let w = wRef as! AXUIElement? {
+                    var fullRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(w, "AXFullScreen" as CFString, &fullRef)
+                    if (fullRef as? Bool) == true {
+                        AXUIElementSetAttributeValue(w, "AXFullScreen" as CFString, kCFBooleanFalse)
+                        for _ in 0..<15 {
+                            usleep(100_000)
+                            var checkFs: CFTypeRef?
+                            AXUIElementCopyAttributeValue(w, "AXFullScreen" as CFString, &checkFs)
+                            if (checkFs as? Bool) == false { break }
+                        }
+                    }
+                }
+            }
+        }
+        usleep(400_000)
     }
 
     for entry in sortedEntries {
@@ -1039,7 +1166,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
                         curPos.y >= (geom.y - 50.0) && curPos.y < (geom.y + geom.h)
 
         if entry.fullscreen {
-            if isFs && onDisplay {
+            if isFs && onDisplay && !outOfOrderDisplays.contains(entry.display_role) {
                 continue
             }
 
