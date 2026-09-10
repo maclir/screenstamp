@@ -1045,6 +1045,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
 
             targetApp.activate()
 
+            var liveWin = win
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
                 AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, falseVal)
@@ -1055,17 +1056,43 @@ func restoreApps(displaysPath: String, inputPath: String) {
                     if (checkFs as? Bool) == false { break }
                 }
                 usleep(400_000)
+
+                // Refresh window element after exiting fullscreen
+                if entry.type == "chrome_profile" {
+                    let res = activateChromeWindow(profileDir: entry.profile_dir ?? "Default", profiles: chromeProfiles)
+                    if let rw = res.win { liveWin = rw }
+                } else {
+                    let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
+                    for _ in 0..<10 {
+                        var mRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &mRef) == .success, let m = mRef {
+                            liveWin = (m as! AXUIElement)
+                            break
+                        }
+                        var fRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &fRef) == .success, let f = fRef {
+                            liveWin = (f as! AXUIElement)
+                            break
+                        }
+                        var wRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &wRef) == .success, let ws = wRef as? [AXUIElement], let first = ws.first {
+                            liveWin = first
+                            break
+                        }
+                        usleep(100_000)
+                    }
+                }
             }
 
             var reasonableSize = CGSize(width: min(1400.0, geom.w * 0.8), height: min(900.0, geom.h * 0.8))
             if let axSz = AXValueCreate(.cgSize, &reasonableSize) {
-                _ = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSz)
+                _ = AXUIElementSetAttributeValue(liveWin, kAXSizeAttribute as CFString, axSz)
             }
 
             var targetPt = CGPoint(x: geom.x + 200.0, y: geom.y + 200.0)
             if let axPos = AXValueCreate(.cgPoint, &targetPt) {
                 for _ in 0..<10 {
-                    let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                    let err = AXUIElementSetAttributeValue(liveWin, kAXPositionAttribute as CFString, axPos)
                     if err == .success { break }
                     usleep(100_000)
                 }
@@ -1103,11 +1130,11 @@ func restoreApps(displaysPath: String, inputPath: String) {
             usleep(350_000)
 
             let trueVal: CFBoolean = kCFBooleanTrue
-            AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, trueVal)
+            AXUIElementSetAttributeValue(liveWin, "AXFullScreen" as CFString, trueVal)
             for _ in 0..<20 {
                 usleep(100_000)
                 var checkFs: CFTypeRef?
-                AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &checkFs)
+                AXUIElementCopyAttributeValue(liveWin, "AXFullScreen" as CFString, &checkFs)
                 if (checkFs as? Bool) == true { break }
             }
             usleep(300_000)
@@ -1125,6 +1152,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
 
             targetApp.activate()
 
+            var liveWin = win
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
                 AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, falseVal)
@@ -1135,6 +1163,32 @@ func restoreApps(displaysPath: String, inputPath: String) {
                     if (checkFs as? Bool) == false { break }
                 }
                 usleep(400_000)
+
+                // Refresh window element after exiting fullscreen
+                if entry.type == "chrome_profile" {
+                    let res = activateChromeWindow(profileDir: entry.profile_dir ?? "Default", profiles: chromeProfiles)
+                    if let rw = res.win { liveWin = rw }
+                } else {
+                    let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
+                    for _ in 0..<10 {
+                        var mRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &mRef) == .success, let m = mRef {
+                            liveWin = (m as! AXUIElement)
+                            break
+                        }
+                        var fRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &fRef) == .success, let f = fRef {
+                            liveWin = (f as! AXUIElement)
+                            break
+                        }
+                        var wRef: CFTypeRef?
+                        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &wRef) == .success, let ws = wRef as? [AXUIElement], let first = ws.first {
+                            liveWin = first
+                            break
+                        }
+                        usleep(100_000)
+                    }
+                }
             }
 
             var pt = CGPoint(x: targetX, y: targetY)
@@ -1142,16 +1196,16 @@ func restoreApps(displaysPath: String, inputPath: String) {
 
             if let axPos = AXValueCreate(.cgPoint, &pt) {
                 for _ in 0..<10 {
-                    let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                    let err = AXUIElementSetAttributeValue(liveWin, kAXPositionAttribute as CFString, axPos)
                     if err == .success { break }
                     usleep(100_000)
                 }
             }
             if let axSize = AXValueCreate(.cgSize, &sz) {
-                _ = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSize)
+                _ = AXUIElementSetAttributeValue(liveWin, kAXSizeAttribute as CFString, axSize)
             }
             if let axPos = AXValueCreate(.cgPoint, &pt) {
-                _ = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                _ = AXUIElementSetAttributeValue(liveWin, kAXPositionAttribute as CFString, axPos)
             }
 
             if entry.type == "chrome_profile", let wid = targetWinId {
