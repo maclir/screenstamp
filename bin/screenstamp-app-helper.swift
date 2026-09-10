@@ -73,23 +73,52 @@ func loadChromeProfiles() -> [(dir: String, name: String, matches: [String])] {
         if let n = info["name"] as? String { names.append(n) }
         if let gn = info["gaia_given_name"] as? String { names.append(gn) }
         if let gnFull = info["gaia_name"] as? String { names.append(gnFull) }
-        if let un = info["user_name"] as? String { names.append(un) }
+        if let un = info["user_name"] as? String {
+            names.append(un)
+            if let atIdx = un.firstIndex(of: "@") {
+                let domain = String(un[un.index(after: atIdx)...])
+                names.append(domain)
+                if let dotIdx = domain.firstIndex(of: ".") {
+                    names.append(String(domain[..<dotIdx]))
+                }
+            }
+        }
+        if let hd = info["hosted_domain"] as? String, hd != "NO_HOSTED_DOMAIN" {
+            names.append(hd)
+            if let dotIdx = hd.firstIndex(of: ".") {
+                names.append(String(hd[..<dotIdx]))
+            }
+        }
         let dispName = (info["name"] as? String) ?? (info["gaia_given_name"] as? String) ?? dirName
         profiles.append((dir: dirName, name: dispName, matches: names))
     }
     return profiles
 }
 
-func resolveChromeProfile(title: String, profiles: [(dir: String, name: String, matches: [String])]) -> (dir: String, name: String) {
+func resolveChromeProfile(text: String, profiles: [(dir: String, name: String, matches: [String])]) -> (dir: String, name: String) {
+    var bestMatch: (dir: String, name: String)? = nil
+    var bestScore = 0
+
     for prof in profiles {
+        var score = 0
         for m in prof.matches {
-            if !m.isEmpty && title.localizedCaseInsensitiveContains(m) {
-                return (dir: prof.dir, name: prof.name)
+            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count >= 3 && text.localizedCaseInsensitiveContains(trimmed) {
+                score += trimmed.count
             }
         }
-        if prof.dir == "Profile 1" && (title.localizedCaseInsensitiveContains("Spotify") || title.localizedCaseInsensitiveContains("Workday")) {
-            return (dir: prof.dir, name: prof.name)
+        if score > bestScore {
+            bestScore = score
+            bestMatch = (dir: prof.dir, name: prof.name)
         }
+    }
+
+    if let match = bestMatch, bestScore > 0 {
+        return match
+    }
+
+    if let def = profiles.first(where: { $0.dir == "Default" }) {
+        return (dir: def.dir, name: def.name)
     }
     return (dir: "Default", name: "Personal")
 }
@@ -126,15 +155,23 @@ func findStandardWindow(in windows: [AXUIElement]) -> AXUIElement? {
     return windows.first
 }
 
-func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Double, title: String)] {
-    var result: [(x: Double, y: Double, w: Double, h: Double, title: String)] = []
+func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Double, title: String, allText: String)] {
+    var result: [(x: Double, y: Double, w: Double, h: Double, title: String, allText: String)] = []
     let chromeScript = """
     tell application "Google Chrome"
         set out to ""
         repeat with w in windows
             set b to bounds of w
             set n to name of w
-            set out to out & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "|" & n & "\\n"
+            if n is not "" then
+                set allTabs to n & " "
+                try
+                    repeat with t in tabs of w
+                        set allTabs to allTabs & (URL of t) & " " & (title of t) & " "
+                    end repeat
+                end try
+                set out to out & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "|" & n & "|" & allTabs & "\\n"
+            end if
         end repeat
         return out
     end tell
@@ -144,15 +181,18 @@ func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Do
         let res = appleScript.executeAndReturnError(&error)
         if let str = res.stringValue {
             for line in str.split(separator: "\n") {
-                let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
-                let coords = parts[0].split(separator: ",").compactMap { Double($0) }
-                if coords.count == 4 {
-                    let title = parts.count > 1 ? String(parts[1]) : ""
-                    let x = coords[0]
-                    let y = coords[1]
-                    let w = coords[2] - coords[0]
-                    let h = coords[3] - coords[1]
-                    result.append((x: x, y: y, w: w, h: h, title: title))
+                let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+                if parts.count >= 2 {
+                    let coords = parts[0].split(separator: ",").compactMap { Double($0) }
+                    if coords.count == 4 {
+                        let title = String(parts[1])
+                        let allText = parts.count > 2 ? String(parts[2]) : title
+                        let x = coords[0]
+                        let y = coords[1]
+                        let w = coords[2] - coords[0]
+                        let h = coords[3] - coords[1]
+                        result.append((x: x, y: y, w: w, h: h, title: title, allText: allText))
+                    }
                 }
             }
         }
@@ -265,9 +305,11 @@ func saveApps(displaysPath: String, outputPath: String) {
         exit(1)
     }
 
-    // Sort by area descending so primary windows take precedence over auxiliary popups
+    // Filter and sort by area descending so primary windows take precedence over auxiliary popups
     let sortedWins = rawWins.filter {
-        ($0[kCGWindowLayer as String] as? Int ?? -1) == 0
+        let layer = $0[kCGWindowLayer as String] as? Int ?? -1
+        let alpha = $0[kCGWindowAlpha as String] as? Double ?? 1.0
+        return layer == 0 && alpha > 0.5
     }.sorted {
         let b1 = $0[kCGWindowBounds as String] as? [String: Any] ?? [:]
         let b2 = $1[kCGWindowBounds as String] as? [String: Any] ?? [:]
@@ -277,7 +319,7 @@ func saveApps(displaysPath: String, outputPath: String) {
     }
 
     var seenChromeProfiles = Set<String>()
-    var seenAppsPerRole = Set<String>()
+    var seenAppBundleIds = Set<String>()
 
     for w in sortedWins {
         let owner = w[kCGWindowOwnerName as String] as? String ?? ""
@@ -312,9 +354,9 @@ func saveApps(displaysPath: String, outputPath: String) {
                     owner.contains("Google Meet")
 
         if isPwa {
-            let key = "\(bundleId.isEmpty ? owner : bundleId):\(role)"
-            if seenAppsPerRole.contains(key) { continue }
-            seenAppsPerRole.insert(key)
+            let key = bundleId.isEmpty ? owner : bundleId
+            if seenAppBundleIds.contains(key) { continue }
+            seenAppBundleIds.insert(key)
 
             entries.append(WindowEntry(
                 type: "pwa",
@@ -331,46 +373,12 @@ func saveApps(displaysPath: String, outputPath: String) {
                 rel_h: relH
             ))
         } else if bundleId == "com.google.Chrome" || owner == "Google Chrome" {
-            // Find matching Chrome window from AppleScript
-            var matchedTitle = ""
-            var bestDiff = Double.infinity
-            for cw in chromeWindows {
-                let diff = abs(cw.x - x) + abs(cw.y - y) + abs(cw.w - width) + abs(cw.h - height)
-                if diff < bestDiff {
-                    bestDiff = diff
-                    matchedTitle = cw.title
-                }
-            }
-
-            // Skip PWA windows mirrored inside Google Chrome or windows with empty titles
-            if matchedTitle.isEmpty {
-                continue
-            }
-
-            let (matchedDir, matchedName) = resolveChromeProfile(title: matchedTitle, profiles: chromeProfiles)
-
-            if seenChromeProfiles.contains(matchedDir) { continue }
-            seenChromeProfiles.insert(matchedDir)
-
-            entries.append(WindowEntry(
-                type: "chrome_profile",
-                bundle_id: "com.google.Chrome",
-                app_name: "Google Chrome",
-                app_path: app?.bundleURL?.path,
-                profile_dir: matchedDir,
-                profile_name: matchedName,
-                display_role: role,
-                fullscreen: isFs,
-                rel_x: relX,
-                rel_y: relY,
-                rel_w: relW,
-                rel_h: relH
-            ))
+            // Chrome browser profiles are processed directly from AppleScript windows below
+            continue
         } else {
             guard let bId = app?.bundleIdentifier, !bId.isEmpty else { continue }
-            let key = "\(bId):\(role)"
-            if seenAppsPerRole.contains(key) { continue }
-            seenAppsPerRole.insert(key)
+            if seenAppBundleIds.contains(bId) { continue }
+            seenAppBundleIds.insert(bId)
 
             entries.append(WindowEntry(
                 type: "app",
@@ -387,6 +395,56 @@ func saveApps(displaysPath: String, outputPath: String) {
                 rel_h: relH
             ))
         }
+    }
+
+    // Detect which displays have native fullscreen Chrome windows
+    var fsDisplaysForChrome = Set<String>()
+    for w in sortedWins {
+        let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+        guard owner == "Google Chrome" else { continue }
+        let bounds = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let width = bounds["Width"] as? Double ?? 0
+        let height = bounds["Height"] as? Double ?? 0
+        let x = bounds["X"] as? Double ?? 0
+        let y = bounds["Y"] as? Double ?? 0
+        if let role = findDisplayRole(x: x, y: y, w: width, h: height, displays: displays),
+           let geom = displays[role] {
+            if abs(width - geom.w) <= 25.0 && height >= geom.h * 0.75 {
+                fsDisplaysForChrome.insert(role)
+            }
+        }
+    }
+
+    // Process Chrome windows from AppleScript
+    for cw in chromeWindows {
+        guard let role = findDisplayRole(x: cw.x, y: cw.y, w: cw.w, h: cw.h, displays: displays),
+              let geom = displays[role] else { continue }
+
+        let isFs = fsDisplaysForChrome.contains(role) && (cw.w >= geom.w * 0.85)
+        let (matchedDir, matchedName) = resolveChromeProfile(text: cw.allText, profiles: chromeProfiles)
+
+        if seenChromeProfiles.contains(matchedDir) { continue }
+        seenChromeProfiles.insert(matchedDir)
+
+        let relX = max(0.0, min(1.0, (cw.x - geom.x) / geom.w))
+        let relY = max(0.0, min(1.0, (cw.y - geom.y) / geom.h))
+        let relW = isFs ? 1.0 : max(0.05, min(1.0, cw.w / geom.w))
+        let relH = isFs ? 1.0 : max(0.05, min(1.0, cw.h / geom.h))
+
+        entries.append(WindowEntry(
+            type: "chrome_profile",
+            bundle_id: "com.google.Chrome",
+            app_name: "Google Chrome",
+            app_path: "/Applications/Google Chrome.app",
+            profile_dir: matchedDir,
+            profile_name: matchedName,
+            display_role: role,
+            fullscreen: isFs,
+            rel_x: isFs ? 0.0 : relX,
+            rel_y: isFs ? 0.0 : relY,
+            rel_w: relW,
+            rel_h: relH
+        ))
     }
 
     let encoder = JSONEncoder()
@@ -445,6 +503,107 @@ func launchMissingApps(entries: [WindowEntry]) {
     }
 }
 
+func activateChromeWindow(profileDir: String, profiles: [(dir: String, name: String, matches: [String])]) -> (win: AXUIElement?, winId: Int?) {
+    var targetTerms: [String] = []
+    for prof in profiles where prof.dir == profileDir {
+        for m in prof.matches {
+            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count >= 3 {
+                targetTerms.append(trimmed)
+            }
+        }
+    }
+
+    var otherTerms: [String] = []
+    for prof in profiles where prof.dir != profileDir {
+        for m in prof.matches {
+            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count >= 3 {
+                otherTerms.append(trimmed)
+            }
+        }
+    }
+
+    let targetChecks = targetTerms.map { term -> String in
+        let escaped = term.replacingOccurrences(of: "\"", with: "\\\"")
+        return "if allText contains \"\(escaped)\" then set matchesTarget to true"
+    }.joined(separator: "\n                ")
+
+    let otherChecks = otherTerms.map { term -> String in
+        let escaped = term.replacingOccurrences(of: "\"", with: "\\\"")
+        return "if allText contains \"\(escaped)\" then set matchesOther to true"
+    }.joined(separator: "\n                ")
+
+    let script = """
+    tell application "Google Chrome"
+        set targetWinId to 0
+        set fallbackWinId to 0
+        repeat with w in windows
+            set n to name of w
+            if n is not "" then
+                set allText to n & " "
+                try
+                    repeat with t in tabs of w
+                        set allText to allText & (URL of t) & " " & (title of t) & " "
+                    end repeat
+                end try
+                
+                set matchesTarget to false
+                \(targetChecks)
+                
+                set matchesOther to false
+                \(otherChecks)
+                
+                if matchesTarget and not matchesOther then
+                    set targetWinId to (id of w)
+                    set index of w to 1
+                    exit repeat
+                else if not matchesOther and fallbackWinId is 0 then
+                    set fallbackWinId to (id of w)
+                end if
+            end if
+        end repeat
+        
+        if targetWinId is 0 and fallbackWinId is not 0 then
+            repeat with w in windows
+                if (id of w) is fallbackWinId then
+                    set index of w to 1
+                    set targetWinId to fallbackWinId
+                    exit repeat
+                end if
+            end repeat
+        end if
+        return targetWinId
+    end tell
+    """
+
+    var matchedWinId: Int? = nil
+    if let asObj = NSAppleScript(source: script) {
+        var err: NSDictionary?
+        let res = asObj.executeAndReturnError(&err)
+        let idVal = Int(res.int32Value)
+        if idVal > 0 {
+            matchedWinId = idVal
+            usleep(250_000)
+        }
+    }
+
+    let apps = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "com.google.Chrome" }
+    guard let chrome = apps.first else { return (nil, matchedWinId) }
+    let axApp = AXUIElementCreateApplication(chrome.processIdentifier)
+    var mainVal: CFTypeRef?
+    if AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &mainVal) == .success,
+       let mainWin = mainVal {
+        return ((mainWin as! AXUIElement), matchedWinId)
+    }
+    var focVal: CFTypeRef?
+    if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focVal) == .success,
+       let focWin = focVal {
+        return ((focWin as! AXUIElement), matchedWinId)
+    }
+    return (nil, matchedWinId)
+}
+
 func restoreApps(displaysPath: String, inputPath: String) {
     if !checkAccessibility(prompt: true) {
         printErr("screenstamp: Accessibility permissions are not yet enabled. Enable them in System Settings, then retry.")
@@ -462,7 +621,6 @@ func restoreApps(displaysPath: String, inputPath: String) {
 
     let running = NSWorkspace.shared.runningApplications
     let chromeProfiles = loadChromeProfiles()
-    var processedChromeWindows = Set<Int>()
 
     for entry in entries {
         guard let geom = displays[entry.display_role] else {
@@ -481,48 +639,51 @@ func restoreApps(displaysPath: String, inputPath: String) {
 
         guard let targetApp = candidateApps.first else { continue }
 
-        // Ensure app window is brought to accessibility context
-        targetApp.activate()
-
-        let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
-        var windows: [AXUIElement] = []
-        for _ in 0..<8 {
-            usleep(100_000)
-            var winRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
-               let wins = winRef as? [AXUIElement], !wins.isEmpty {
-                windows = wins
-                break
-            }
-        }
-        guard !windows.isEmpty else { continue }
-
         var targetWin: AXUIElement? = nil
+        var targetWinId: Int? = nil
         if entry.type == "chrome_profile" {
-            for (i, win) in windows.enumerated() {
-                if processedChromeWindows.contains(i) { continue }
-                var titleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
-                let title = (titleRef as? String) ?? ""
-                let resolved = resolveChromeProfile(title: title, profiles: chromeProfiles)
-                let targetDir = entry.profile_dir ?? "Default"
-                if resolved.dir == targetDir || windows.count == 1 {
-                    targetWin = win
-                    processedChromeWindows.insert(i)
-                    break
+            let res = activateChromeWindow(profileDir: entry.profile_dir ?? "Default", profiles: chromeProfiles)
+            targetWin = res.win
+            targetWinId = res.winId
+        } else {
+            let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
+            var windows: [AXUIElement] = []
+
+            // Check main and focused window first (avoids activating/space-jumping if already active)
+            var mainRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &mainRef) == .success,
+               let main = mainRef {
+                windows = [main as! AXUIElement]
+            } else {
+                var winRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
+                   let wins = winRef as? [AXUIElement], !wins.isEmpty {
+                    windows = wins
                 }
             }
-            if targetWin == nil {
-                for (i, win) in windows.enumerated() {
-                    if !processedChromeWindows.contains(i) {
-                        targetWin = win
-                        processedChromeWindows.insert(i)
+
+            // If still no window found, activate app and retry
+            if windows.isEmpty {
+                targetApp.activate()
+                for _ in 0..<8 {
+                    usleep(100_000)
+                    var mRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &mRef) == .success,
+                       let m = mRef {
+                        windows = [m as! AXUIElement]
+                        break
+                    }
+                    var wRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &wRef) == .success,
+                       let wins = wRef as? [AXUIElement], !wins.isEmpty {
+                        windows = wins
                         break
                     }
                 }
             }
-        } else {
-            targetWin = findStandardWindow(in: windows)
+
+            guard !windows.isEmpty else { continue }
+            targetWin = findStandardWindow(in: windows) ?? windows.first
         }
 
         guard let win = targetWin else { continue }
@@ -535,14 +696,15 @@ func restoreApps(displaysPath: String, inputPath: String) {
         var curPos = CGPoint.zero
         if let p = posRef { AXValueGetValue(p as! AXValue, .cgPoint, &curPos) }
 
-        if entry.fullscreen {
-            let alreadyOnDisplay = isFs &&
-                curPos.x >= geom.x && curPos.x < (geom.x + geom.w) &&
-                curPos.y >= geom.y && curPos.y < (geom.y + geom.h)
+        let onDisplay = curPos.x >= geom.x && curPos.x < (geom.x + geom.w) &&
+                        curPos.y >= geom.y && curPos.y < (geom.y + geom.h)
 
-            if alreadyOnDisplay {
+        if entry.fullscreen {
+            if isFs && onDisplay {
                 continue
             }
+
+            targetApp.activate()
 
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
@@ -563,13 +725,38 @@ func restoreApps(displaysPath: String, inputPath: String) {
                     if err == .success { break }
                     usleep(100_000)
                 }
-                usleep(150_000)
             }
+
+            if entry.type == "chrome_profile", let winId = targetWinId {
+                let asScript = """
+                tell application "Google Chrome"
+                    set bounds of window id \(winId) to {\(Int(geom.x + 100)), \(Int(geom.y + 100)), \(Int(geom.x + 1100)), \(Int(geom.y + 800))}
+                end tell
+                """
+                if let asObj = NSAppleScript(source: asScript) {
+                    var err: NSDictionary?
+                    _ = asObj.executeAndReturnError(&err)
+                }
+            }
+            usleep(200_000)
 
             let trueVal: CFBoolean = kCFBooleanTrue
             AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, trueVal)
             usleep(300_000)
         } else {
+            let targetX = geom.x + (entry.rel_x * geom.w)
+            let targetY = geom.y + (entry.rel_y * geom.h)
+            let targetW = entry.rel_w * geom.w
+            let targetH = entry.rel_h * geom.h
+
+            let alreadyThere = !isFs && onDisplay &&
+                abs(curPos.x - targetX) < 25 && abs(curPos.y - targetY) < 25
+            if alreadyThere {
+                continue
+            }
+
+            targetApp.activate()
+
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
                 AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, falseVal)
@@ -581,11 +768,6 @@ func restoreApps(displaysPath: String, inputPath: String) {
                 }
                 usleep(250_000)
             }
-
-            let targetX = geom.x + (entry.rel_x * geom.w)
-            let targetY = geom.y + (entry.rel_y * geom.h)
-            let targetW = entry.rel_w * geom.w
-            let targetH = entry.rel_h * geom.h
 
             var pt = CGPoint(x: targetX, y: targetY)
             var sz = CGSize(width: targetW, height: targetH)
@@ -599,6 +781,18 @@ func restoreApps(displaysPath: String, inputPath: String) {
             }
             if let axSize = AXValueCreate(.cgSize, &sz) {
                 _ = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSize)
+            }
+
+            if entry.type == "chrome_profile", let winId = targetWinId {
+                let asScript = """
+                tell application "Google Chrome"
+                    set bounds of window id \(winId) to {\(Int(targetX)), \(Int(targetY)), \(Int(targetX + targetW)), \(Int(targetY + targetH))}
+                end tell
+                """
+                if let asObj = NSAppleScript(source: asScript) {
+                    var err: NSDictionary?
+                    _ = asObj.executeAndReturnError(&err)
+                }
             }
         }
     }

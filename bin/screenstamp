@@ -153,7 +153,7 @@ state_to_displays_json() {
     }
     /^Resolution: / { res = $2; next }
     /^Origin: / { orig = $2; next }
-    /^Enabled: true/ {
+    /^Enabled: / {
       if (role != "" && res != "" && orig != "") {
         split(res, r, "x")
         gsub(/[()]/, "", orig)
