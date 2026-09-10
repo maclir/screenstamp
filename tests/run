@@ -82,6 +82,29 @@ else
   /bin/cat -- "$temporary_root/save-apps.err" >&2
 fi
 
+single_monitor_list="$temporary_root/single-monitor-list.txt"
+sed -n '1,12p' "$FIXTURES/reference-list.txt" > "$single_monitor_list"
+
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$single_monitor_list" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  "$COMMAND" save-apps office > /dev/null 2>&1; then
+  fail "save-apps rejects overwriting multi-display profile when fewer displays are connected"
+else
+  pass "save-apps rejects overwriting multi-display profile when fewer displays are connected"
+fi
+
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$single_monitor_list" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  "$COMMAND" save-apps --force office > /dev/null 2>&1; then
+  pass "save-apps --force allows overwriting multi-display profile when fewer displays are connected"
+else
+  fail "save-apps --force allows overwriting multi-display profile when fewer displays are connected"
+fi
+
 capture="$temporary_root/load-arguments.txt"
 helper_load_capture="$temporary_root/helper-load.txt"
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" \

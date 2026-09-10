@@ -80,6 +80,52 @@ func loadChromeProfiles() -> [(dir: String, name: String, matches: [String])] {
     return profiles
 }
 
+func resolveChromeProfile(title: String, profiles: [(dir: String, name: String, matches: [String])]) -> (dir: String, name: String) {
+    for prof in profiles {
+        for m in prof.matches {
+            if !m.isEmpty && title.localizedCaseInsensitiveContains(m) {
+                return (dir: prof.dir, name: prof.name)
+            }
+        }
+        if prof.dir == "Profile 1" && (title.localizedCaseInsensitiveContains("Spotify") || title.localizedCaseInsensitiveContains("Workday")) {
+            return (dir: prof.dir, name: prof.name)
+        }
+    }
+    return (dir: "Default", name: "Personal")
+}
+
+func findStandardWindow(in windows: [AXUIElement]) -> AXUIElement? {
+    for win in windows {
+        var subroleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleRef)
+        let subrole = (subroleRef as? String) ?? ""
+        if subrole == "AXStandardWindow" {
+            var sizeRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef)
+            var sz = CGSize.zero
+            if let s = sizeRef { AXValueGetValue(s as! AXValue, .cgSize, &sz) }
+            if sz.width >= 200 && sz.height >= 150 {
+                return win
+            }
+        }
+    }
+    for win in windows {
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, kAXRoleAttribute as CFString, &roleRef)
+        let role = (roleRef as? String) ?? ""
+        if role == "AXScrollArea" { continue }
+
+        var sizeRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef)
+        var sz = CGSize.zero
+        if let s = sizeRef { AXValueGetValue(s as! AXValue, .cgSize, &sz) }
+        if sz.width >= 200 && sz.height >= 150 {
+            return win
+        }
+    }
+    return windows.first
+}
+
 func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Double, title: String)] {
     var result: [(x: Double, y: Double, w: Double, h: Double, title: String)] = []
     let chromeScript = """
@@ -209,7 +255,8 @@ func saveApps(displaysPath: String, outputPath: String) {
     let ignoredOwners: Set<String> = [
         "Window Server", "Dock", "Spotlight", "ControlCenter", "NotificationCenter",
         "SystemUIServer", "CursorUIViewService", "AutoFill", "Wi-Fi", "loginwindow",
-        "WindowManager", "AirPlay", "screencapture", "TextInputMenuAgent"
+        "WindowManager", "AirPlay", "AirPlay Screen Mirroring", "AirPlayUIAgent",
+        "GlobalProtect", "screencapture", "TextInputMenuAgent"
     ]
 
     // Query all on-screen and space windows via CGWindowList
@@ -295,24 +342,12 @@ func saveApps(displaysPath: String, outputPath: String) {
                 }
             }
 
-            // Skip PWA windows mirrored inside Google Chrome
-            if matchedTitle.isEmpty && (appName.contains("Calendar") || appName.contains("Meet")) {
+            // Skip PWA windows mirrored inside Google Chrome or windows with empty titles
+            if matchedTitle.isEmpty {
                 continue
             }
 
-            // Match profile
-            var matchedDir = "Default"
-            var matchedName = "Personal"
-            for prof in chromeProfiles {
-                for m in prof.matches {
-                    if matchedTitle.localizedCaseInsensitiveContains(m) ||
-                       (prof.dir == "Profile 1" && (matchedTitle.contains("Spotify") || matchedTitle.contains("Workday"))) {
-                        matchedDir = prof.dir
-                        matchedName = prof.name
-                        break
-                    }
-                }
-            }
+            let (matchedDir, matchedName) = resolveChromeProfile(title: matchedTitle, profiles: chromeProfiles)
 
             if seenChromeProfiles.contains(matchedDir) { continue }
             seenChromeProfiles.insert(matchedDir)
@@ -426,6 +461,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
     launchMissingApps(entries: entries)
 
     let running = NSWorkspace.shared.runningApplications
+    let chromeProfiles = loadChromeProfiles()
     var processedChromeWindows = Set<Int>()
 
     for entry in entries {
@@ -444,34 +480,49 @@ func restoreApps(displaysPath: String, inputPath: String) {
         }
 
         guard let targetApp = candidateApps.first else { continue }
-        
+
         // Ensure app window is brought to accessibility context
         targetApp.activate()
-        usleep(100_000)
 
         let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
-              let windows = winRef as? [AXUIElement] else { continue }
+        var windows: [AXUIElement] = []
+        for _ in 0..<8 {
+            usleep(100_000)
+            var winRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &winRef) == .success,
+               let wins = winRef as? [AXUIElement], !wins.isEmpty {
+                windows = wins
+                break
+            }
+        }
+        guard !windows.isEmpty else { continue }
 
         var targetWin: AXUIElement? = nil
-        for (i, win) in windows.enumerated() {
-            var titleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
-            let title = (titleRef as? String) ?? ""
-
-            if entry.type == "chrome_profile" {
+        if entry.type == "chrome_profile" {
+            for (i, win) in windows.enumerated() {
                 if processedChromeWindows.contains(i) { continue }
-                let profileMatch = entry.profile_name ?? entry.profile_dir ?? ""
-                if title.contains(profileMatch) || entries.filter({ $0.type == "chrome_profile" }).count == 1 {
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
+                let title = (titleRef as? String) ?? ""
+                let resolved = resolveChromeProfile(title: title, profiles: chromeProfiles)
+                let targetDir = entry.profile_dir ?? "Default"
+                if resolved.dir == targetDir || windows.count == 1 {
                     targetWin = win
                     processedChromeWindows.insert(i)
                     break
                 }
-            } else {
-                targetWin = win
-                break
             }
+            if targetWin == nil {
+                for (i, win) in windows.enumerated() {
+                    if !processedChromeWindows.contains(i) {
+                        targetWin = win
+                        processedChromeWindows.insert(i)
+                        break
+                    }
+                }
+            }
+        } else {
+            targetWin = findStandardWindow(in: windows)
         }
 
         guard let win = targetWin else { continue }
@@ -496,23 +547,39 @@ func restoreApps(displaysPath: String, inputPath: String) {
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
                 AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, falseVal)
-                usleep(400_000)
+                for _ in 0..<20 {
+                    usleep(100_000)
+                    var checkFs: CFTypeRef?
+                    AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &checkFs)
+                    if (checkFs as? Bool) == false { break }
+                }
+                usleep(250_000)
             }
 
-            var targetPt = CGPoint(x: geom.x + 50.0, y: geom.y + 50.0)
+            var targetPt = CGPoint(x: geom.x + 100.0, y: geom.y + 100.0)
             if let axPos = AXValueCreate(.cgPoint, &targetPt) {
-                AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                for _ in 0..<5 {
+                    let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                    if err == .success { break }
+                    usleep(100_000)
+                }
                 usleep(150_000)
             }
 
             let trueVal: CFBoolean = kCFBooleanTrue
             AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, trueVal)
-            usleep(400_000)
+            usleep(300_000)
         } else {
             if isFs {
                 let falseVal: CFBoolean = kCFBooleanFalse
                 AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, falseVal)
-                usleep(400_000)
+                for _ in 0..<20 {
+                    usleep(100_000)
+                    var checkFs: CFTypeRef?
+                    AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &checkFs)
+                    if (checkFs as? Bool) == false { break }
+                }
+                usleep(250_000)
             }
 
             let targetX = geom.x + (entry.rel_x * geom.w)
@@ -524,10 +591,14 @@ func restoreApps(displaysPath: String, inputPath: String) {
             var sz = CGSize(width: targetW, height: targetH)
 
             if let axPos = AXValueCreate(.cgPoint, &pt) {
-                AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                for _ in 0..<5 {
+                    let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
+                    if err == .success { break }
+                    usleep(100_000)
+                }
             }
             if let axSize = AXValueCreate(.cgSize, &sz) {
-                AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSize)
+                _ = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSize)
             }
         }
     }
