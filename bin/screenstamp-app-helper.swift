@@ -21,6 +21,7 @@ struct WindowEntry: Codable {
     let profile_name: String?   // e.g. "Work", "Alireza"
     let display_role: String    // e.g. "builtin-1", "external-1"
     let fullscreen: Bool
+    let rel_space: Int?         // relative to desktop (0 = desktop)
     let rel_x: Double
     let rel_y: Double
     let rel_w: Double
@@ -274,6 +275,76 @@ func findDisplayRole(x: Double, y: Double, w: Double, h: Double, displays: [Stri
     return bestRole
 }
 
+// MARK: - Spaces Detection Helper
+
+typealias CGSConnectionID = Int32
+@_silgen_name("CGSMainConnectionID")
+func CGSMainConnectionID() -> CGSConnectionID
+
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func CGSCopyManagedDisplaySpaces(_ cid: CGSConnectionID) -> CFArray?
+
+struct SpacesInfo {
+    var widToRelSpace: [Int: Int] = [:]
+    var roleAndPidToRelSpace: [String: Int] = [:]
+}
+
+func querySpacesInfo(displays: [String: DisplayGeom]) -> SpacesInfo {
+    var info = SpacesInfo()
+    let cid = CGSMainConnectionID()
+    guard let spacesArr = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else {
+        return info
+    }
+
+    var displayCount: UInt32 = 0
+    CGGetOnlineDisplayList(0, nil, &displayCount)
+    var dList = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+    CGGetOnlineDisplayList(displayCount, &dList, &displayCount)
+
+    var uuidToRole: [String: String] = [:]
+    for d in dList {
+        guard let uuidRef = CGDisplayCreateUUIDFromDisplayID(d)?.takeRetainedValue() else { continue }
+        let uuidStr = CFUUIDCreateString(nil, uuidRef) as String
+        let bounds = CGDisplayBounds(d)
+        if let role = findDisplayRole(x: bounds.origin.x, y: bounds.origin.y, w: bounds.width, h: bounds.height, displays: displays) {
+            uuidToRole[uuidStr] = role
+        }
+    }
+
+    for d in spacesArr {
+        guard let dispId = d["Display Identifier"] as? String,
+              let sps = d["Spaces"] as? [[String: Any]] else { continue }
+        let role = uuidToRole[dispId]
+        let desktopIdx = sps.firstIndex(where: { ($0["type"] as? Int) == 0 }) ?? 0
+
+        for (idx, sp) in sps.enumerated() {
+            let rel = idx - desktopIdx
+            if let fsWid = sp["fs_wid"] as? Int, fsWid > 0 {
+                info.widToRelSpace[fsWid] = rel
+            }
+            if let pid = sp["pid"] as? Int, pid > 0, let r = role {
+                info.roleAndPidToRelSpace["\(r):\(pid)"] = rel
+            }
+            if let tlm = sp["TileLayoutManager"] as? [String: Any],
+               let tSpaces = tlm["TileSpaces"] as? [[String: Any]] {
+                for ts in tSpaces {
+                    if let twid = ts["TileWindowID"] as? Int, twid > 0 {
+                        info.widToRelSpace[twid] = rel
+                    }
+                    if let fwid = ts["fs_wid"] as? Int, fwid > 0 {
+                        info.widToRelSpace[fwid] = rel
+                    }
+                    if let tpid = ts["pid"] as? Int, tpid > 0, let r = role {
+                        info.roleAndPidToRelSpace["\(r):\(tpid)"] = rel
+                    }
+                }
+            }
+        }
+    }
+
+    return info
+}
+
 func printAppSummary(entries: [WindowEntry], action: String) {
     guard !entries.isEmpty else {
         print("\(action) 0 app placement(s).")
@@ -295,13 +366,23 @@ func printAppSummary(entries: [WindowEntry], action: String) {
             nameStr = entry.app_name
         }
 
+        let rolePadded = entry.display_role.padding(toLength: 10, withPad: " ", startingAt: 0)
         let targetStr: String
+        let sp = entry.rel_space
         if entry.fullscreen {
-            targetStr = "\(entry.display_role) (Fullscreen)"
+            if let s = sp {
+                targetStr = "\(rolePadded) (Space \(s), Fullscreen)"
+            } else {
+                targetStr = "\(rolePadded) (Fullscreen)"
+            }
         } else {
             let xStr = String(format: "%.2f", entry.rel_x)
             let yStr = String(format: "%.2f", entry.rel_y)
-            targetStr = "\(entry.display_role) (Desktop side: x=\(xStr), y=\(yStr))"
+            if let s = sp {
+                targetStr = "\(rolePadded) (Space \(s), Desktop side: x=\(xStr), y=\(yStr))"
+            } else {
+                targetStr = "\(rolePadded) (Desktop side: x=\(xStr), y=\(yStr))"
+            }
         }
 
         if nameStr.count > maxNameLen {
@@ -326,6 +407,7 @@ func saveApps(displaysPath: String, outputPath: String) {
     }
 
     let displays = parseDisplays(from: displaysPath)
+    let spacesInfo = querySpacesInfo(displays: displays)
     let chromeProfiles = loadChromeProfiles()
     let chromeWindows = queryChromeWindowsAppleScript()
     var entries: [WindowEntry] = []
@@ -381,6 +463,8 @@ func saveApps(displaysPath: String, outputPath: String) {
               let geom = displays[role] else { continue }
 
         let isFs = (abs(width - geom.w) <= 25.0) && (height >= geom.h * 0.75)
+        let wid = w[kCGWindowNumber as String] as? Int ?? 0
+        let relSpace: Int = isFs ? (spacesInfo.widToRelSpace[wid] ?? spacesInfo.roleAndPidToRelSpace["\(role):\(pid)"] ?? 1) : 0
         let relX = max(0.0, min(1.0, (x - geom.x) / geom.w))
         let relY = max(0.0, min(1.0, (y - geom.y) / geom.h))
         let relW = max(0.05, min(1.0, width / geom.w))
@@ -405,6 +489,7 @@ func saveApps(displaysPath: String, outputPath: String) {
                 profile_name: nil,
                 display_role: role,
                 fullscreen: isFs,
+                rel_space: relSpace,
                 rel_x: relX,
                 rel_y: relY,
                 rel_w: relW,
@@ -427,6 +512,7 @@ func saveApps(displaysPath: String, outputPath: String) {
                 profile_name: nil,
                 display_role: role,
                 fullscreen: isFs,
+                rel_space: relSpace,
                 rel_x: relX,
                 rel_y: relY,
                 rel_w: relW,
@@ -453,6 +539,9 @@ func saveApps(displaysPath: String, outputPath: String) {
         }
     }
 
+    let chromeApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
+    let chromePid = chromeApp?.processIdentifier ?? 0
+
     // Process Chrome windows from AppleScript
     for cw in chromeWindows {
         guard let role = findDisplayRole(x: cw.x, y: cw.y, w: cw.w, h: cw.h, displays: displays),
@@ -463,6 +552,20 @@ func saveApps(displaysPath: String, outputPath: String) {
 
         if seenChromeProfiles.contains(matchedDir) { continue }
         seenChromeProfiles.insert(matchedDir)
+
+        var chromeWid: Int? = nil
+        for rw in rawWins {
+            guard (rw[kCGWindowOwnerName as String] as? String) == "Google Chrome",
+                  let b = rw[kCGWindowBounds as String] as? [String: Any],
+                  let rx = b["X"] as? Double,
+                  let ry = b["Y"] as? Double,
+                  let rwId = rw[kCGWindowNumber as String] as? Int else { continue }
+            if abs(rx - cw.x) < 50 && abs(ry - cw.y) < 50 {
+                chromeWid = rwId
+                break
+            }
+        }
+        let chromeRelSpace: Int = isFs ? (chromeWid.flatMap { spacesInfo.widToRelSpace[$0] } ?? spacesInfo.roleAndPidToRelSpace["\(role):\(chromePid)"] ?? 1) : 0
 
         let relX = max(0.0, min(1.0, (cw.x - geom.x) / geom.w))
         let relY = max(0.0, min(1.0, (cw.y - geom.y) / geom.h))
@@ -478,11 +581,31 @@ func saveApps(displaysPath: String, outputPath: String) {
             profile_name: matchedName,
             display_role: role,
             fullscreen: isFs,
+            rel_space: chromeRelSpace,
             rel_x: isFs ? 0.0 : relX,
             rel_y: isFs ? 0.0 : relY,
             rel_w: relW,
             rel_h: relH
         ))
+    }
+
+    // Sort entries by display role and relative space for consistent, readable ordering
+    entries.sort {
+        if $0.display_role != $1.display_role {
+            if $0.display_role.hasPrefix("external") && $1.display_role.hasPrefix("builtin") {
+                return true
+            }
+            if $0.display_role.hasPrefix("builtin") && $1.display_role.hasPrefix("external") {
+                return false
+            }
+            return $0.display_role < $1.display_role
+        }
+        let s0 = $0.rel_space ?? 0
+        let s1 = $1.rel_space ?? 0
+        if s0 != s1 {
+            return s0 < s1
+        }
+        return $0.app_name < $1.app_name
     }
 
     let encoder = JSONEncoder()
@@ -719,7 +842,26 @@ func restoreApps(displaysPath: String, inputPath: String) {
     let running = NSWorkspace.shared.runningApplications
     let chromeProfiles = loadChromeProfiles()
 
-    for entry in entries {
+    var sortedEntries = entries
+    sortedEntries.sort {
+        if $0.display_role != $1.display_role {
+            if $0.display_role.hasPrefix("external") && $1.display_role.hasPrefix("builtin") {
+                return true
+            }
+            if $0.display_role.hasPrefix("builtin") && $1.display_role.hasPrefix("external") {
+                return false
+            }
+            return $0.display_role < $1.display_role
+        }
+        let s0 = $0.rel_space ?? 0
+        let s1 = $1.rel_space ?? 0
+        if s0 != s1 {
+            return s0 < s1
+        }
+        return $0.app_name < $1.app_name
+    }
+
+    for entry in sortedEntries {
         guard let geom = displays[entry.display_role] else {
             printErr("Warning: display role '\(entry.display_role)' not found for \(entry.app_name)")
             continue
@@ -871,7 +1013,7 @@ func restoreApps(displaysPath: String, inputPath: String) {
         }
     }
 
-    printAppSummary(entries: entries, action: "Restored")
+    printAppSummary(entries: sortedEntries, action: "Restored")
 }
 
 // MARK: - Main

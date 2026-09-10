@@ -59,7 +59,7 @@ assert_files_equal \
   "$FIXTURES/expected-office.profile" \
   "$profile_dir/office.profile"
 
-if [[ -f "$profile_dir/office.apps" ]] && grep -q '"app_name": "iTerm2"' "$profile_dir/office.apps"; then
+if [[ -f "$profile_dir/office.apps" ]] && grep -q '"app_name": "iTerm2"' "$profile_dir/office.apps" && grep -q '"rel_space"' "$profile_dir/office.apps"; then
   pass "save captures app placements alongside display settings"
 else
   fail "save captures app placements alongside display settings"
