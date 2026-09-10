@@ -59,13 +59,13 @@ func parseDisplays(from path: String) -> [String: DisplayGeom] {
 }
 
 func loadChromeProfiles() -> [(dir: String, name: String, matches: [String])] {
-    var profiles: [(dir: String, name: String, matches: [String])] = []
+    var rawProfiles: [(dir: String, name: String, matches: [String])] = []
     let localStatePath = ("~/Library/Application Support/Google/Chrome/Local State" as NSString).expandingTildeInPath
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: localStatePath)),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let profileObj = json["profile"] as? [String: Any],
           let infoCache = profileObj["info_cache"] as? [String: [String: Any]] else {
-        return profiles
+        return rawProfiles
     }
 
     for (dirName, info) in infoCache {
@@ -90,23 +90,61 @@ func loadChromeProfiles() -> [(dir: String, name: String, matches: [String])] {
             }
         }
         let dispName = (info["name"] as? String) ?? (info["gaia_given_name"] as? String) ?? dirName
-        profiles.append((dir: dirName, name: dispName, matches: names))
+        rawProfiles.append((dir: dirName, name: dispName, matches: names))
     }
-    return profiles
+
+    // Discard any match terms shared across multiple profiles (e.g. user's first/last name)
+    var termCounts: [String: Int] = [:]
+    for p in rawProfiles {
+        var seenInProf = Set<String>()
+        for m in p.matches {
+            let low = m.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if low.count >= 3 && !seenInProf.contains(low) {
+                seenInProf.insert(low)
+                termCounts[low, default: 0] += 1
+            }
+        }
+    }
+
+    var filteredProfiles: [(dir: String, name: String, matches: [String])] = []
+    for p in rawProfiles {
+        var uniqueMatches: [String] = []
+        for m in p.matches {
+            let low = m.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if low.count >= 3 && termCounts[low] == 1 && !uniqueMatches.contains(low) {
+                uniqueMatches.append(low)
+            }
+        }
+        filteredProfiles.append((dir: p.dir, name: p.name, matches: uniqueMatches))
+    }
+    return filteredProfiles
 }
 
-func resolveChromeProfile(text: String, profiles: [(dir: String, name: String, matches: [String])]) -> (dir: String, name: String) {
+func scoreChromeProfile(title: String, allText: String, profile: (dir: String, name: String, matches: [String])) -> Int {
+    let lowerTitle = title.lowercased()
+    let lowerText = allText.lowercased()
+    var score = 0
+
+    if lowerTitle.contains("(\(profile.name.lowercased()))") ||
+       lowerTitle.contains("- \(profile.name.lowercased())") {
+        score += 100
+    }
+
+    for term in profile.matches {
+        if lowerText.contains(term) {
+            let weight = (term.contains("@") || term.contains(".")) ? 50 : 10
+            score += weight
+        }
+    }
+    return score
+}
+
+func resolveChromeProfile(title: String, text: String, profiles: [(dir: String, name: String, matches: [String])]) -> (dir: String, name: String) {
     var bestMatch: (dir: String, name: String)? = nil
     var bestScore = 0
 
     for prof in profiles {
-        var score = 0
-        for m in prof.matches {
-            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.count >= 3 && text.localizedCaseInsensitiveContains(trimmed) {
-                score += trimmed.count
-            }
-        }
+        let score = scoreChromeProfile(title: title, allText: text, profile: prof)
         if score > bestScore {
             bestScore = score
             bestMatch = (dir: prof.dir, name: prof.name)
@@ -170,7 +208,7 @@ func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Do
                         set allTabs to allTabs & (URL of t) & " " & (title of t) & " "
                     end repeat
                 end try
-                set out to out & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "|" & n & "|" & allTabs & "\\n"
+                set out to out & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "<#COL#>" & n & "<#COL#>" & allTabs & "<#ROW#>"
             end if
         end repeat
         return out
@@ -180,13 +218,13 @@ func queryChromeWindowsAppleScript() -> [(x: Double, y: Double, w: Double, h: Do
         var error: NSDictionary?
         let res = appleScript.executeAndReturnError(&error)
         if let str = res.stringValue {
-            for line in str.split(separator: "\n") {
-                let parts = line.split(separator: "|", omittingEmptySubsequences: false)
+            for row in str.components(separatedBy: "<#ROW#>") {
+                let parts = row.components(separatedBy: "<#COL#>")
                 if parts.count >= 2 {
                     let coords = parts[0].split(separator: ",").compactMap { Double($0) }
                     if coords.count == 4 {
-                        let title = String(parts[1])
-                        let allText = parts.count > 2 ? String(parts[2]) : title
+                        let title = parts[1]
+                        let allText = parts.count > 2 ? parts[2] : title
                         let x = coords[0]
                         let y = coords[1]
                         let w = coords[2] - coords[0]
@@ -420,8 +458,8 @@ func saveApps(displaysPath: String, outputPath: String) {
         guard let role = findDisplayRole(x: cw.x, y: cw.y, w: cw.w, h: cw.h, displays: displays),
               let geom = displays[role] else { continue }
 
-        let isFs = fsDisplaysForChrome.contains(role) && (cw.w >= geom.w * 0.85)
-        let (matchedDir, matchedName) = resolveChromeProfile(text: cw.allText, profiles: chromeProfiles)
+        let isFs = fsDisplaysForChrome.contains(role) && (abs(cw.w - geom.w) <= 25.0) && (cw.h >= geom.h * 0.75)
+        let (matchedDir, matchedName) = resolveChromeProfile(title: cw.title, text: cw.allText, profiles: chromeProfiles)
 
         if seenChromeProfiles.contains(matchedDir) { continue }
         seenChromeProfiles.insert(matchedDir)
@@ -504,104 +542,163 @@ func launchMissingApps(entries: [WindowEntry]) {
 }
 
 func activateChromeWindow(profileDir: String, profiles: [(dir: String, name: String, matches: [String])]) -> (win: AXUIElement?, winId: Int?) {
-    var targetTerms: [String] = []
-    for prof in profiles where prof.dir == profileDir {
-        for m in prof.matches {
-            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.count >= 3 {
-                targetTerms.append(trimmed)
-            }
-        }
-    }
-
-    var otherTerms: [String] = []
-    for prof in profiles where prof.dir != profileDir {
-        for m in prof.matches {
-            let trimmed = m.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.count >= 3 {
-                otherTerms.append(trimmed)
-            }
-        }
-    }
-
-    let targetChecks = targetTerms.map { term -> String in
-        let escaped = term.replacingOccurrences(of: "\"", with: "\\\"")
-        return "if allText contains \"\(escaped)\" then set matchesTarget to true"
-    }.joined(separator: "\n                ")
-
-    let otherChecks = otherTerms.map { term -> String in
-        let escaped = term.replacingOccurrences(of: "\"", with: "\\\"")
-        return "if allText contains \"\(escaped)\" then set matchesOther to true"
-    }.joined(separator: "\n                ")
-
     let script = """
     tell application "Google Chrome"
-        set targetWinId to 0
-        set fallbackWinId to 0
+        set out to ""
         repeat with w in windows
+            set winId to id of w
             set n to name of w
-            if n is not "" then
-                set allText to n & " "
-                try
-                    repeat with t in tabs of w
-                        set allText to allText & (URL of t) & " " & (title of t) & " "
-                    end repeat
-                end try
-                
-                set matchesTarget to false
-                \(targetChecks)
-                
-                set matchesOther to false
-                \(otherChecks)
-                
-                if matchesTarget and not matchesOther then
-                    set targetWinId to (id of w)
-                    set index of w to 1
-                    exit repeat
-                else if not matchesOther and fallbackWinId is 0 then
-                    set fallbackWinId to (id of w)
-                end if
-            end if
+            set allTabs to n & " "
+            try
+                repeat with t in tabs of w
+                    set allTabs to allTabs & (URL of t) & " " & (title of t) & " "
+                end repeat
+            end try
+            set out to out & winId & "<#COL#>" & n & "<#COL#>" & allTabs & "<#ROW#>"
         end repeat
-        
-        if targetWinId is 0 and fallbackWinId is not 0 then
-            repeat with w in windows
-                if (id of w) is fallbackWinId then
-                    set index of w to 1
-                    set targetWinId to fallbackWinId
-                    exit repeat
-                end if
-            end repeat
-        end if
-        return targetWinId
+        return out
     end tell
     """
 
-    var matchedWinId: Int? = nil
+    var parsedWindows: [(winId: Int, title: String, allText: String)] = []
     if let asObj = NSAppleScript(source: script) {
         var err: NSDictionary?
-        let res = asObj.executeAndReturnError(&err)
-        let idVal = Int(res.int32Value)
-        if idVal > 0 {
-            matchedWinId = idVal
-            usleep(250_000)
+        if let outStr = asObj.executeAndReturnError(&err).stringValue {
+            for row in outStr.components(separatedBy: "<#ROW#>") {
+                let cols = row.components(separatedBy: "<#COL#>")
+                if cols.count >= 3, let wid = Int(cols[0]) {
+                    parsedWindows.append((winId: wid, title: cols[1], allText: cols[2]))
+                }
+            }
         }
     }
 
+    guard let targetProfile = profiles.first(where: { $0.dir == profileDir }) else {
+        return (nil, nil)
+    }
+
+    var bestWinId: Int? = nil
+    var bestWinTitle = ""
+    var bestScore = -1
+
+    for w in parsedWindows {
+        let score = scoreChromeProfile(title: w.title, allText: w.allText, profile: targetProfile)
+        if score > bestScore {
+            bestScore = score
+            bestWinId = w.winId
+            bestWinTitle = w.title
+        }
+    }
+
+    let winToActivate = (bestScore > 0 ? bestWinId : nil) ?? bestWinId ?? parsedWindows.first?.winId
+    if let winId = winToActivate {
+        let actScript = """
+        tell application "Google Chrome"
+            activate
+            repeat with w in windows
+                if (id of w) is \(winId) then
+                    set index of w to 1
+                    exit repeat
+                end if
+            end repeat
+        end tell
+        """
+        if let asObj = NSAppleScript(source: actScript) {
+            var err: NSDictionary?
+            _ = asObj.executeAndReturnError(&err)
+        }
+        usleep(300_000)
+    }
+
     let apps = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "com.google.Chrome" }
-    guard let chrome = apps.first else { return (nil, matchedWinId) }
+    guard let chrome = apps.first else { return (nil, winToActivate) }
     let axApp = AXUIElementCreateApplication(chrome.processIdentifier)
+
+    var candidateWindows: [AXUIElement] = []
+    var seenHashes = Set<CFHashCode>()
+    func addWin(_ el: AXUIElement) {
+        let h = CFHash(el)
+        if !seenHashes.contains(h) {
+            seenHashes.insert(h)
+            candidateWindows.append(el)
+        }
+    }
+
+    var winsRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
+       let wins = winsRef as? [AXUIElement] {
+        wins.forEach { addWin($0) }
+    }
+
+    var chRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(axApp, kAXChildrenAttribute as CFString, &chRef) == .success,
+       let chs = chRef as? [AXUIElement] {
+        for c in chs {
+            var rRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(c, kAXRoleAttribute as CFString, &rRef)
+            if (rRef as? String) == "AXWindow" {
+                addWin(c)
+            }
+        }
+    }
+
     var mainVal: CFTypeRef?
     if AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &mainVal) == .success,
-       let mainWin = mainVal {
-        return ((mainWin as! AXUIElement), matchedWinId)
-    }
+       let m = mainVal { addWin(m as! AXUIElement) }
     var focVal: CFTypeRef?
     if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focVal) == .success,
-       let focWin = focVal {
-        return ((focWin as! AXUIElement), matchedWinId)
+       let f = focVal { addWin(f as! AXUIElement) }
+
+    // Find best candidate window matching targetProfile
+    var bestAxWin: AXUIElement? = nil
+    var bestAxScore = -1000
+
+    for w in candidateWindows {
+        var sVal: CFTypeRef?
+        AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sVal)
+        var sz = CGSize.zero
+        if let s = sVal { AXValueGetValue(s as! AXValue, .cgSize, &sz) }
+        guard sz.width >= 300 && sz.height >= 200 else { continue }
+
+        var tVal: CFTypeRef?
+        AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &tVal)
+        let title = (tVal as? String) ?? ""
+        let lowerTitle = title.lowercased()
+
+        var score = 0
+        let targetNameLower = targetProfile.name.lowercased()
+        if lowerTitle.contains("(\(targetNameLower))") || lowerTitle.contains("- \(targetNameLower)") {
+            score += 200
+        }
+
+        for other in profiles where other.dir != targetProfile.dir {
+            let otherNameLower = other.name.lowercased()
+            if lowerTitle.contains("(\(otherNameLower))") || lowerTitle.contains("- \(otherNameLower)") {
+                score -= 200
+            }
+        }
+
+        for term in targetProfile.matches {
+            if lowerTitle.contains(term) {
+                score += 50
+            }
+        }
+
+        if !bestWinTitle.isEmpty && (title.contains(bestWinTitle) || bestWinTitle.contains(title)) {
+            score += 100
+        }
+
+        if score > bestAxScore {
+            bestAxScore = score
+            bestAxWin = w
+        }
     }
-    return (nil, matchedWinId)
+
+    if let win = bestAxWin, bestAxScore > 0 {
+        return (win, winToActivate)
+    }
+
+    return (candidateWindows.first, winToActivate)
 }
 
 func restoreApps(displaysPath: String, inputPath: String) {
@@ -640,11 +737,9 @@ func restoreApps(displaysPath: String, inputPath: String) {
         guard let targetApp = candidateApps.first else { continue }
 
         var targetWin: AXUIElement? = nil
-        var targetWinId: Int? = nil
         if entry.type == "chrome_profile" {
             let res = activateChromeWindow(profileDir: entry.profile_dir ?? "Default", profiles: chromeProfiles)
             targetWin = res.win
-            targetWinId = res.winId
         } else {
             let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
             var windows: [AXUIElement] = []
@@ -715,30 +810,18 @@ func restoreApps(displaysPath: String, inputPath: String) {
                     AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &checkFs)
                     if (checkFs as? Bool) == false { break }
                 }
-                usleep(250_000)
+                usleep(300_000)
             }
 
             var targetPt = CGPoint(x: geom.x + 100.0, y: geom.y + 100.0)
             if let axPos = AXValueCreate(.cgPoint, &targetPt) {
-                for _ in 0..<5 {
+                for _ in 0..<10 {
                     let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
                     if err == .success { break }
                     usleep(100_000)
                 }
             }
-
-            if entry.type == "chrome_profile", let winId = targetWinId {
-                let asScript = """
-                tell application "Google Chrome"
-                    set bounds of window id \(winId) to {\(Int(geom.x + 100)), \(Int(geom.y + 100)), \(Int(geom.x + 1100)), \(Int(geom.y + 800))}
-                end tell
-                """
-                if let asObj = NSAppleScript(source: asScript) {
-                    var err: NSDictionary?
-                    _ = asObj.executeAndReturnError(&err)
-                }
-            }
-            usleep(200_000)
+            usleep(250_000)
 
             let trueVal: CFBoolean = kCFBooleanTrue
             AXUIElementSetAttributeValue(win, "AXFullScreen" as CFString, trueVal)
@@ -766,14 +849,14 @@ func restoreApps(displaysPath: String, inputPath: String) {
                     AXUIElementCopyAttributeValue(win, "AXFullScreen" as CFString, &checkFs)
                     if (checkFs as? Bool) == false { break }
                 }
-                usleep(250_000)
+                usleep(300_000)
             }
 
             var pt = CGPoint(x: targetX, y: targetY)
             var sz = CGSize(width: targetW, height: targetH)
 
             if let axPos = AXValueCreate(.cgPoint, &pt) {
-                for _ in 0..<5 {
+                for _ in 0..<10 {
                     let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
                     if err == .success { break }
                     usleep(100_000)
@@ -782,17 +865,8 @@ func restoreApps(displaysPath: String, inputPath: String) {
             if let axSize = AXValueCreate(.cgSize, &sz) {
                 _ = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, axSize)
             }
-
-            if entry.type == "chrome_profile", let winId = targetWinId {
-                let asScript = """
-                tell application "Google Chrome"
-                    set bounds of window id \(winId) to {\(Int(targetX)), \(Int(targetY)), \(Int(targetX + targetW)), \(Int(targetY + targetH))}
-                end tell
-                """
-                if let asObj = NSAppleScript(source: asScript) {
-                    var err: NSDictionary?
-                    _ = asObj.executeAndReturnError(&err)
-                }
+            if let axPos = AXValueCreate(.cgPoint, &pt) {
+                _ = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, axPos)
             }
         }
     }
