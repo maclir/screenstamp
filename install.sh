@@ -77,6 +77,8 @@ install -m 755 "$source_file" "$install_dir/screenstamp"
 printf '\nScreenstamp is ready:\n'
 printf '  screenstamp save office\n'
 printf '  screenstamp load office\n'
+printf '  screenstamp save-displays office\n'
+printf '  screenstamp load-displays office\n'
 printf '  screenstamp save-apps office\n'
 printf '  screenstamp load-apps office\n'
 printf '\nPermissions setup:\n'

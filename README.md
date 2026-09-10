@@ -54,9 +54,15 @@ screenstamp save office
 
 This saves both your display geometry (`office.profile`) and your open window/app placements (`office.apps`).
 
-### 2. Save only app placements
+### 2. Save only display settings or app placements
 
-If your displays are already set up and you only want to snapshot or refresh window placements:
+If you only want to save display topology without modifying app layouts:
+
+```sh
+screenstamp save-displays office
+```
+
+Or if your displays are already set up and you only want to snapshot or refresh window placements:
 
 ```sh
 screenstamp save-apps office
@@ -76,7 +82,15 @@ This will:
 3. Move non-fullscreen windows to their saved positions (e.g. left or right half of the screen).
 4. Move native full-screen windows to their assigned monitors.
 
-### 4. Load only app placements
+### 4. Load only display settings (without moving apps)
+
+If you just want to set up your monitor resolutions, rotation, and arrangement without moving or touching any of your open apps:
+
+```sh
+screenstamp load-displays office
+```
+
+### 5. Load only app placements
 
 If your displays are already configured and you just want to reposition and launch your apps:
 
@@ -84,7 +98,7 @@ If your displays are already configured and you just want to reposition and laun
 screenstamp load-apps office
 ```
 
-### 5. List saved profiles
+### 6. List saved profiles
 
 ```sh
 screenstamp list
@@ -98,8 +112,10 @@ The equivalent Make targets remain available when working in the repository:
 
 ```sh
 make save office
-make save-apps office
 make load office
+make save-displays office
+make load-displays office
+make save-apps office
 make load-apps office
 make permissions
 make list

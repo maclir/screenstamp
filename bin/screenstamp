@@ -19,10 +19,22 @@ usage() {
 Usage:
   screenstamp save [--force] <name>
   screenstamp load <name>
+  screenstamp save-displays [--force] <name>
+  screenstamp load-displays <name>
   screenstamp save-apps [--force] <name>
   screenstamp load-apps <name>
   screenstamp permissions
   screenstamp list
+
+Commands:
+  save           Save display layout and window placements (both)
+  load           Apply display layout and restore window placements (both)
+  save-displays  Save only display layout
+  load-displays  Apply only display layout without moving apps
+  save-apps      Save only window placements
+  load-apps      Restore only window placements
+  permissions    Check or request macOS Accessibility permissions
+  list           List saved profiles
 
 Names may contain letters, numbers, dots, underscores, and hyphens.
 EOF
@@ -238,10 +250,12 @@ save_apps() {
 save_profile() {
   local name=""
   local force=0
+  local save_apps_flag=1
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       -f|--force) force=1; shift ;;
+      --displays-only|--no-apps) save_apps_flag=0; shift ;;
       -*) die "unknown option '$1'" ;;
       *)
         if [[ -n "$name" ]]; then
@@ -289,17 +303,33 @@ save_profile() {
 
   print -- "Saved '$name' with $display_count display(s)."
 
-  if helper="$(get_app_helper 2>/dev/null)"; then
-    displays_json_file="$(mktemp "${TMPDIR:-/tmp}/screenstamp-displays.XXXXXX")"
-    print -r -- "$state" | state_to_displays_json > "$displays_json_file"
-    eval "$helper save \"$displays_json_file\" \"$PROFILE_DIR/$name.apps\"" || print -u2 -- "screenstamp: could not save app placements"
-    rm -f -- "$displays_json_file"
+  if (( save_apps_flag )); then
+    if helper="$(get_app_helper 2>/dev/null)"; then
+      displays_json_file="$(mktemp "${TMPDIR:-/tmp}/screenstamp-displays.XXXXXX")"
+      print -r -- "$state" | state_to_displays_json > "$displays_json_file"
+      eval "$helper save \"$displays_json_file\" \"$PROFILE_DIR/$name.apps\"" || print -u2 -- "screenstamp: could not save app placements"
+      rm -f -- "$displays_json_file"
+    fi
   fi
 }
 
-
 load_apps() {
-  local name="$1"
+  local name=""
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -*) die "unknown option '$1'" ;;
+      *)
+        if [[ -n "$name" ]]; then
+          usage >&2; exit 2
+        fi
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { usage >&2; exit 2; }
   local apps_file="$PROFILE_DIR/$name.apps"
   local helper state displays_json_file
 
@@ -315,7 +345,24 @@ load_apps() {
 }
 
 load_profile() {
-  local name="$1"
+  local name=""
+  local load_apps_flag=1
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --displays-only|--no-apps) load_apps_flag=0; shift ;;
+      -*) die "unknown option '$1'" ;;
+      *)
+        if [[ -n "$name" ]]; then
+          usage >&2; exit 2
+        fi
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [[ -n "$name" ]] || { usage >&2; exit 2; }
   local source header state current_rows role id options
   integer current_count=0
   integer profile_count=0
@@ -360,7 +407,7 @@ load_profile() {
   "$DISPLAYPLACER_BIN" "${arguments[@]}" || die "displayplacer could not apply profile '$name'"
   print -- "Loaded '$name' onto $profile_count connected display(s)."
 
-  if [[ -r "$PROFILE_DIR/$name.apps" ]]; then
+  if (( load_apps_flag )) && [[ -r "$PROFILE_DIR/$name.apps" ]]; then
     load_apps "$name"
   fi
 }
@@ -390,17 +437,25 @@ main() {
       shift
       save_profile "$@"
       ;;
+    save-displays|save-screens)
+      shift
+      save_profile --displays-only "$@"
+      ;;
     save-apps)
       shift
       save_apps "$@"
       ;;
     load)
-      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
-      load_profile "$2"
+      shift
+      load_profile "$@"
+      ;;
+    load-displays|load-screens|displays)
+      shift
+      load_profile --displays-only "$@"
       ;;
     load-apps|apps)
-      [[ "$#" -eq 2 ]] || { usage >&2; exit 2; }
-      load_apps "$2"
+      shift
+      load_apps "$@"
       ;;
     permissions)
       [[ "$#" -eq 1 ]] || { usage >&2; exit 2; }

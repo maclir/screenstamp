@@ -82,6 +82,24 @@ else
   /bin/cat -- "$temporary_root/save-apps.err" >&2
 fi
 
+helper_save_displays_capture="$temporary_root/helper-save-displays.txt"
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_save_displays_capture" \
+  "$COMMAND" save-displays only-displays > "$temporary_root/save-displays.out" 2> "$temporary_root/save-displays.err"; then
+  if [[ -f "$profile_dir/only-displays.profile" ]] && [[ ! -f "$profile_dir/only-displays.apps" ]] && [[ ! -f "$helper_save_displays_capture" ]]; then
+    pass "save-displays saves only display layout without app placements"
+    rm -f -- "$profile_dir/only-displays.profile"
+  else
+    fail "save-displays saves only display layout without app placements"
+  fi
+else
+  fail "save-displays saves only display layout without app placements"
+  /bin/cat -- "$temporary_root/save-displays.err" >&2
+fi
+
 single_monitor_list="$temporary_root/single-monitor-list.txt"
 sed -n '1,12p' "$FIXTURES/reference-list.txt" > "$single_monitor_list"
 
@@ -148,6 +166,25 @@ if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
 else
   fail "load-apps restores app placements without calling displayplacer"
   /bin/cat -- "$temporary_root/load-apps.err" >&2
+fi
+
+helper_load_displays_capture="$temporary_root/helper-load-displays.txt"
+load_displays_capture="$temporary_root/load-displays-capture.txt"
+if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$load_displays_capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  APP_HELPER_CAPTURE_FILE="$helper_load_displays_capture" \
+  "$COMMAND" load-displays office > "$temporary_root/load-displays.out" 2> "$temporary_root/load-displays.err"; then
+  if [[ -f "$load_displays_capture" ]] && [[ ! -e "$helper_load_displays_capture" ]]; then
+    pass "load-displays applies display layout without moving apps"
+  else
+    fail "load-displays applies display layout without moving apps"
+  fi
+else
+  fail "load-displays applies display layout without moving apps"
+  /bin/cat -- "$temporary_root/load-displays.err" >&2
 fi
 
 if SCREENSTAMP_PROFILE_DIR="$profile_dir" \
@@ -250,11 +287,42 @@ if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
   DISPLAYPLACER_BIN="$MOCK" \
   DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
   SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  make -s -C "$PROJECT_DIR" save-displays meeting-room-displays > "$temporary_root/make-save-displays.out" 2> "$temporary_root/make-save-displays.err"; then
+  if [[ -f "$make_profile_dir/meeting-room-displays.profile" ]] && [[ ! -f "$make_profile_dir/meeting-room-displays.apps" ]]; then
+    pass "make save-displays supports a positional profile name"
+  else
+    fail "make save-displays supports a positional profile name"
+  fi
+else
+  fail "make save-displays supports a positional profile name"
+  /bin/cat -- "$temporary_root/make-save-displays.err" >&2
+fi
+
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/reference-list.txt" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
   make -s -C "$PROJECT_DIR" load-apps meeting-room > "$temporary_root/make-apps.out" 2> "$temporary_root/make-apps.err"; then
   pass "make load-apps supports a positional profile name"
 else
   fail "make load-apps supports a positional profile name"
   /bin/cat -- "$temporary_root/make-apps.err" >&2
+fi
+
+make_load_displays_capture="$temporary_root/make-load-displays-capture.txt"
+if SCREENSTAMP_PROFILE_DIR="$make_profile_dir" \
+  DISPLAYPLACER_BIN="$MOCK" \
+  DISPLAYPLACER_LIST_FILE="$FIXTURES/different-monitor-list.txt" \
+  DISPLAYPLACER_CAPTURE_FILE="$make_load_displays_capture" \
+  SCREENSTAMP_APP_HELPER_BIN="$MOCK_HELPER" \
+  make -s -C "$PROJECT_DIR" load-displays meeting-room > "$temporary_root/make-load-displays.out" 2> "$temporary_root/make-load-displays.err"; then
+  assert_files_equal \
+    "make load-displays supports a positional profile name" \
+    "$FIXTURES/expected-load-arguments.txt" \
+    "$make_load_displays_capture"
+else
+  fail "make load-displays supports a positional profile name"
+  /bin/cat -- "$temporary_root/make-load-displays.err" >&2
 fi
 
 install_prefix="$temporary_root/install-prefix"
@@ -270,6 +338,8 @@ if BREW_CAPTURE_FILE="$brew_capture" \
     [[ "$(<"$brew_capture")" == $'install\ndisplayplacer' ]] && \
     grep -Fqx '  screenstamp save office' "$temporary_root/install.out" && \
     grep -Fqx '  screenstamp load office' "$temporary_root/install.out" && \
+    grep -Fqx '  screenstamp save-displays office' "$temporary_root/install.out" && \
+    grep -Fqx '  screenstamp load-displays office' "$temporary_root/install.out" && \
     SCREENSTAMP_PROFILE_DIR="$profile_dir" "$installed_command" list > "$temporary_root/installed-list.out" && \
     [[ "$(<"$temporary_root/installed-list.out")" == "office" ]]; then
     pass "make install installs displayplacer and a working screenstamp command"
@@ -294,7 +364,9 @@ if BREW_CAPTURE_FILE="$script_brew_capture" \
   if [[ -x "$script_installed_command" ]] && \
     [[ "$(<"$script_brew_capture")" == $'install\ndisplayplacer' ]] && \
     grep -Fqx '  screenstamp save office' "$temporary_root/script-install.out" && \
-    grep -Fqx '  screenstamp load office' "$temporary_root/script-install.out"; then
+    grep -Fqx '  screenstamp load office' "$temporary_root/script-install.out" && \
+    grep -Fqx '  screenstamp save-displays office' "$temporary_root/script-install.out" && \
+    grep -Fqx '  screenstamp load-displays office' "$temporary_root/script-install.out"; then
     pass "one-line installer installs displayplacer and screenstamp"
   else
     fail "one-line installer installs displayplacer and screenstamp"
